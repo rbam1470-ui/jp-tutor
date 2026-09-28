@@ -624,9 +624,11 @@ function initSTT() {
   recog.maxAlternatives = 1;
 
   let finalText = '';
+  let sttHadError = false;   // 'error'와 'end'가 같은 실패에 대해 알림을 중복으로 띄우지 않기 위한 플래그
 
   recog.addEventListener('start', () => {
     finalText = '';
+    sttHadError = false;
     state.recording = true;
     el.btnMic.classList.add('recording');
     setStatus('🎙️ 듣는 중… 일본어로 말해 보세요');
@@ -644,10 +646,28 @@ function initSTT() {
   });
 
   recog.addEventListener('error', (e) => {
-    if (e.error === 'no-speech' || e.error === 'aborted') return;
-    const m = e.error === 'not-allowed' || e.error === 'service-not-allowed'
-      ? '마이크 권한이 거부되었습니다. 브라우저 주소창의 자물쇠 아이콘에서 마이크를 허용해 주세요.'
-      : `음성 인식 오류: ${e.error}`;
+    if (e.error === 'aborted') return;   // 사용자가 버튼을 다시 눌러 직접 멈춘 경우 — 조용히 무시
+    console.warn('[jt] 음성 인식 오류:', e.error);
+    sttHadError = true;
+
+    let m;
+    switch (e.error) {
+      case 'no-speech':
+        m = '음성이 감지되지 않았어요. 마이크에 조금 더 가까이 대고 또렷하게 말해 주세요.';
+        break;
+      case 'not-allowed':
+      case 'service-not-allowed':
+        m = '마이크 권한이 거부되었습니다. 브라우저 주소창의 자물쇠 아이콘에서 마이크를 허용해 주세요.';
+        break;
+      case 'audio-capture':
+        m = '마이크를 찾을 수 없습니다. 마이크가 연결되어 있는지, 다른 앱이 사용 중은 아닌지 확인해 주세요.';
+        break;
+      case 'network':
+        m = '음성 인식 서버에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.';
+        break;
+      default:
+        m = `음성 인식 오류: ${e.error}`;
+    }
     addTurn({ kind: 'notice', text: m, error: true });
   });
 
@@ -656,7 +676,11 @@ function initSTT() {
     el.btnMic.classList.remove('recording');
     setStatus(null);
     const t = (finalText || el.input.value).trim();
-    if (t) send(t);            // 인식이 끝나면 자동 전송
+    if (t) { send(t); return; }        // 인식이 끝나면 자동 전송
+    // 에러 이벤트 없이 그냥 조용히 끝나면서 아무것도 못 잡은 경우에도 피드백을 준다.
+    if (!sttHadError) {
+      addTurn({ kind: 'notice', text: '음성이 인식되지 않았어요. 마이크 🎙️를 다시 눌러 말해 주세요.', error: true });
+    }
   });
 }
 
@@ -665,7 +689,7 @@ function startRecording() {
   synth?.cancel();
   unlockTts();
   el.input.value = '';
-  try { recog.start(); } catch { /* 이미 시작된 경우 무시 */ }
+  try { recog.start(); } catch (e) { console.warn('[jt] 음성 인식 시작 실패 (이미 시작된 경우일 수 있음)', e); }
 }
 
 function stopRecording() {
