@@ -66,6 +66,7 @@ const SCHEMA = {
   type: 'object',
   properties: {
     correction_needed: { type: 'boolean', description: '사용자의 직전 일본어 발화에 고칠 점이 있으면 true' },
+    user_input_chunks: chunksSchema('사용자가 방금 보낸 메시지 원문 그대로를 단어/구 단위로 나눈 배열 (교정 전, 사용자가 실제로 쓴 그대로). 조각의 jp를 이어붙이면 사용자 메시지 원문과 완전히 같아야 함. 사용자 메시지에 일본어가 전혀 없으면(순수 한국어 질문 등) 빈 배열'),
     corrected_jp:      { type: 'string',  description: '교정된 전체 일본어 문장. 고칠 점이 없으면 빈 문자열' },
     corrected_chunks:  chunksSchema('corrected_jp를 단어/구 단위로 나눈 배열. corrected_jp가 빈 문자열이면 빈 배열'),
     feedback_ko:       { type: 'string',  description: '무엇이 왜 어색한지 한국어 설명. 없으면 빈 문자열' },
@@ -77,7 +78,7 @@ const SCHEMA = {
     question_ko:       { type: 'string',  description: 'question_jp 의 한국어 번역' },
   },
   required: [
-    'correction_needed', 'corrected_jp', 'corrected_chunks', 'feedback_ko',
+    'correction_needed', 'user_input_chunks', 'corrected_jp', 'corrected_chunks', 'feedback_ko',
     'reply_jp', 'reply_chunks', 'reply_ko',
     'question_jp', 'question_chunks', 'question_ko',
   ],
@@ -127,16 +128,18 @@ function systemPrompt() {
     '매 턴마다 지정된 JSON 스키마로만 응답하십시오. 각 필드 규칙:',
     '1. correction_needed — 사용자의 직전 발화에 문법·조사·어휘 선택·경어·부자연스러운 어순 문제가 있으면 true.',
     '   사용자가 한국어로 질문했거나, 발화가 이미 자연스러우면 false.',
-    '2. corrected_jp — 원래 의도를 살린 자연스러운 일본어 전체 문장. correction_needed가 false면 빈 문자열.',
-    '3. corrected_chunks — corrected_jp를 위 규칙대로 나눈 배열. corrected_jp가 빈 문자열이면 빈 배열 [].',
-    '4. feedback_ko — 무엇이 왜 어색했는지 한국어로 1~3문장. 규칙을 짧고 구체적으로. false면 빈 문자열.',
+    '2. user_input_chunks — 사용자가 방금 보낸 메시지 "원문 그대로"(교정하지 않고)를 위 규칙대로 나눈 배열.',
+    '   사용자도 자신이 방금 뭐라고 말했는지 로마자로 확인할 수 있게 하는 용도. 메시지가 순수 한국어면 빈 배열 [].',
+    '3. corrected_jp — 원래 의도를 살린 자연스러운 일본어 전체 문장. correction_needed가 false면 빈 문자열.',
+    '4. corrected_chunks — corrected_jp를 위 규칙대로 나눈 배열. corrected_jp가 빈 문자열이면 빈 배열 [].',
+    '5. feedback_ko — 무엇이 왜 어색했는지 한국어로 1~3문장. 규칙을 짧고 구체적으로. false면 빈 문자열.',
     '   일본어 단어를 언급할 때 괄호로 로마자를 끼워 넣지 말 것 (예: "「見ました」는 잘못된 표현이에요" ○,',
     '   "「見ました(mimashita)」는 잘못된 표현이에요" ×) — 순수 한국어 문장으로만 쓸 것.',
-    '5. reply_jp — 튜터로서 대화를 이어가는 자연스러운 일본어 응답 1~2문장. 학습자 수준에 맞춘 어휘를 쓸 것.',
-    '6. reply_chunks — reply_jp를 위 규칙대로 나눈 배열. 비워두지 말 것.',
-    '7. reply_ko — reply_jp의 한국어 번역.',
-    '8. question_jp — 대화를 이어가기 위한 추가 질문을 정확히 1개만. 학습자가 대답하기 쉬운 열린 질문으로.',
-    '9. question_chunks / question_ko — 8번을 위 규칙대로 나눈 배열과 한국어 번역.',
+    '6. reply_jp — 튜터로서 대화를 이어가는 자연스러운 일본어 응답 1~2문장. 학습자 수준에 맞춘 어휘를 쓸 것.',
+    '7. reply_chunks — reply_jp를 위 규칙대로 나눈 배열. 비워두지 말 것.',
+    '8. reply_ko — reply_jp의 한국어 번역.',
+    '9. question_jp — 대화를 이어가기 위한 추가 질문을 정확히 1개만. 학습자가 대답하기 쉬운 열린 질문으로.',
+    '10. question_chunks / question_ko — 9번을 위 규칙대로 나눈 배열과 한국어 번역.',
     practiceBlock(),
     '',
     '태도: 격려하되 과장하지 말 것. 훈계조·장황한 설명 금지. 사용자가 한국어로 물으면 한국어로 답하되,',
@@ -267,10 +270,11 @@ function renderAll() {
 
 function addTurn(turn, { persist = true } = {}) {
   state.turns.push(turn);
-  addTurnNode(turn);
+  const node = addTurnNode(turn);
   if (turn.kind === 'user') el.starters.hidden = true;
   if (persist) persistChat();
   scrollDown(turn.kind === 'user');
+  return node;
 }
 
 function addTurnNode(turn) {
@@ -279,13 +283,23 @@ function addTurnNode(turn) {
   else if (turn.kind === 'bot') node = botNode(turn);
   else node = noticeNode(turn);
   el.chat.appendChild(node);
+  return node;
 }
 
 function userNode(turn) {
   const row = document.createElement('div');
   row.className = 'row user';
-  row.innerHTML = `<div class="bubble"><div class="jp">${esc(turn.text)}</div></div>`;
+  // turn.chunks는 응답이 돌아온 뒤 updateUserRuby()가 채운다 — 그 전까진 평문으로 표시.
+  row.innerHTML = `<div class="bubble"><div class="jp">${renderRuby(turn.text, turn.chunks)}</div></div>`;
   return row;
+}
+
+/** 사용자 메시지를 보낸 뒤 응답에 담겨온 로마자 조각으로 그 말풍선을 갱신한다. */
+function updateUserRuby(rowEl, turn) {
+  if (!rowEl || !turn) return;
+  const jpDiv = rowEl.querySelector('.jp');
+  if (jpDiv) jpDiv.innerHTML = renderRuby(turn.text, turn.chunks);
+  persistChat();   // 로마자가 채워진 상태로 저장해서 새로고침해도 유지되게 한다.
 }
 
 /**
@@ -563,15 +577,20 @@ async function send(text) {
   synth?.cancel();
 
   state.history.push({ role: 'user', content: text });
-  addTurn({ kind: 'user', text });
+  const userTurn = { kind: 'user', text };
+  const userRow = addTurn(userTurn);
   el.input.value = '';
   autoGrow();
 
-  await runTurn();
+  await runTurn(userTurn, userRow);
 }
 
-/** 히스토리 마지막이 user 메시지인 상태에서 응답을 받아 온다. 재시도도 이 함수를 재사용. */
-async function runTurn() {
+/**
+ * 히스토리 마지막이 user 메시지인 상태에서 응답을 받아 온다. 재시도도 이 함수를 재사용.
+ * @param {object} [userTurn] 이번에 보낸 사용자 턴 객체 — 응답의 user_input_chunks로 그 말풍선에 로마자를 채우는 데 씀.
+ * @param {HTMLElement} [userRow] 그 사용자 턴의 DOM 행.
+ */
+async function runTurn(userTurn, userRow) {
   if (state.busy) return;
   setBusy(true);
   showTyping();
@@ -582,6 +601,11 @@ async function runTurn() {
 
     // 모델이 실제로 생성한 원문(JSON)을 그대로 히스토리에 넣어야 다음 턴 맥락이 유지된다.
     state.history.push({ role: 'assistant', content: JSON.stringify(data) });
+
+    if (userTurn && Array.isArray(data.user_input_chunks) && data.user_input_chunks.length) {
+      userTurn.chunks = data.user_input_chunks;
+      updateUserRuby(userRow, userTurn);
+    }
 
     addTurn({ kind: 'bot', data, hadUserInput: true });
 
@@ -599,7 +623,11 @@ async function runTurn() {
 
 function retryLast() {
   const last = state.history[state.history.length - 1];
-  if (last && last.role === 'user') runTurn();
+  if (!last || last.role !== 'user') return;
+  const userTurn = [...state.turns].reverse().find((t) => t.kind === 'user');
+  const userRows = el.chat.querySelectorAll('.row.user');
+  const userRow = userRows[userRows.length - 1];
+  runTurn(userTurn, userRow);
 }
 
 function setBusy(v) {
