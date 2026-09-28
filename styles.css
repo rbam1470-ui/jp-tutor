@@ -669,7 +669,7 @@ select.text-input { appearance: none; background-image: none; }
 .quiz-result .r-label { font-size: 13px; color: var(--text-dim); }
 .quiz-result-list { text-align: left; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
 .quiz-result-list .rl-item {
-  display: flex; justify-content: space-between; gap: 8px;
+  display: flex; align-items: flex-start; gap: 8px;
   font-size: 13px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -677,3 +677,7 @@ select.text-input { appearance: none; background-image: none; }
 }
 .quiz-result-list .rl-item.wrong { background: color-mix(in srgb, var(--danger) 10%, var(--surface-2)); }
 .quiz-result-list .rl-mark { flex: none; }
+.rl-text { display: flex; flex-direction: column; gap: 1px; }
+.rl-jp { font-weight: 600; }
+.rl-romaji { font-size: 11px; font-style: italic; color: var(--text-dim); }
+.rl-ko { font-size: 12.5px; color: var(--text-dim); }

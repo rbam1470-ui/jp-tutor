@@ -91,8 +91,10 @@ function systemPrompt() {
     '   사용자가 한국어로 질문했거나, 발화가 이미 자연스러우면 false.',
     '2. corrected_jp — 원래 의도를 살린 자연스러운 일본어 전체 문장. correction_needed가 false면 빈 문자열.',
     '3. corrected_romaji — corrected_jp의 로마자 발음. corrected_jp가 빈 문자열이면 빈 문자열.',
-    '4. feedback_ko — 무엇이 왜 어색했는지 한국어로 1~3문장. 일본어 단어를 언급할 때는 항상',
-    '   괄호로 로마자 발음을 함께 적을 것 (예: 見ました(mimashita)). 규칙을 짧고 구체적으로. false면 빈 문자열.',
+    '4. feedback_ko — 무엇이 왜 어색했는지 한국어로 1~3문장. 규칙을 짧고 구체적으로. false면 빈 문자열.',
+    '   일본어 단어를 언급할 때 괄호로 로마자를 끼워 넣지 말 것 (예: "「見ました」는 잘못된 표현이에요" ○,',
+    '   "「見ました(mimashita)」는 잘못된 표현이에요" ×) — 로마자는 이미 corrected_romaji 필드에 따로 있으므로',
+    '   본문에 섞으면 좁은 화면에서 줄바꿈되어 지저분해 보인다. 순수 한국어 문장으로만 쓸 것.',
     '5. reply_jp — 튜터로서 대화를 이어가는 자연스러운 일본어 응답 1~2문장. 학습자 수준에 맞춘 어휘를 쓸 것.',
     '6. reply_romaji — reply_jp 전체의 로마자 발음. 비워두지 말 것.',
     '7. reply_ko — reply_jp의 한국어 번역.',
@@ -1036,7 +1038,11 @@ function renderQuizResult() {
           ${wrong.map((r) => `
             <div class="rl-item wrong">
               <span class="rl-mark">❌</span>
-              <span>${esc(r.word.jp)} <i>(${esc(r.word.romaji)})</i> — ${esc(r.word.ko)}</span>
+              <span class="rl-text">
+                <span class="rl-jp">${esc(r.word.jp)}</span>
+                <span class="rl-romaji">${esc(r.word.romaji)}</span>
+                <span class="rl-ko">${esc(r.word.ko)}</span>
+              </span>
             </div>`).join('')}
         </div>
         <div class="r-label">틀린 단어는 '다시 풀기'에 자동으로 저장됩니다.</div>
