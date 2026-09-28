@@ -11,20 +11,23 @@ const API_VERSION = '2023-06-01';
 /**
  * 모델별 지원 파라미터.
  *   effort   : output_config.effort — Haiku 4.5는 미지원이므로 null (보내면 400).
- *   thinking : Sonnet 5 / Opus 5는 확장 사고가 기본 ON. 회화는 지연시간이 중요하고
- *              사고가 필요한 작업이 아니라 disabled + effort:low 로 응답을 빠르게 한다.
- *              (Opus 5는 effort가 high 이하일 때만 disabled 허용)
+ *   thinking : 매 턴마다 문장을 글자 단위 조각(jp/romaji/ko)으로 정확히 나누고 원문과
+ *              한 글자도 틀림없이 이어붙여야 하는 까다로운 작업이라, thinking을 꺼두면
+ *              (특히 Sonnet 5) 조각 배열을 통째로 비우거나 글자를 빠뜨리는 경우가 실측
+ *              확인됐다. 그래서 thinking은 끄지 않고 기본(adaptive)으로 둔다 — 문장이
+ *              짧으면 사고 토큰도 몇 개 안 써서 비용/지연 영향은 작다. effort:low로
+ *              전체적인 사고 깊이는 낮게 유지해 균형을 맞춘다.
  */
 const MODELS = {
   'claude-sonnet-5': {
     label: 'Claude Sonnet 5 — 균형 (권장)',
     help: '속도·품질·비용의 균형. 회화 연습에 가장 적합합니다. ($2 / $10 per MTok)',
-    effort: 'low', thinking: 'disabled',
+    effort: 'low', thinking: null,
   },
   'claude-opus-5': {
     label: 'Claude Opus 5 — 최고 품질',
     help: '교정 설명이 가장 정확하고 섬세합니다. 조금 느리고 비쌉니다. ($5 / $25 per MTok)',
-    effort: 'low', thinking: 'disabled',
+    effort: 'low', thinking: null,
   },
   'claude-haiku-4-5': {
     label: 'Claude Haiku 4.5 — 가장 빠름',
@@ -43,7 +46,7 @@ const LEVELS = {
 /**
  * 문장 하나를 단어/구 단위로 나눈 조각 배열의 스키마.
  * 각 조각의 jp를 순서대로 이어붙이면 원문 문장과 완전히 같아야 한다 — 이렇게 해야
- * 화면에서 "일본어 조각 바로 아래에 그 조각의 로마자"를 후리가나처럼 배치할 수 있다.
+ * 화면에서 "일본어 조각 바로 아래에 그 조각의 로마자·한국어 뜻"을 후리가나처럼 배치할 수 있다.
  */
 function chunksSchema(desc) {
   return {
@@ -54,8 +57,9 @@ function chunksSchema(desc) {
       properties: {
         jp:     { type: 'string', description: '이 조각의 일본어 원문 (한자/가나/구두점/공백 그대로)' },
         romaji: { type: 'string', description: '이 조각의 로마자 발음. 구두점·공백처럼 발음이 없으면 빈 문자열' },
+        ko:     { type: 'string', description: '단어/조사가 시작하는 첫 조각에만 그 단어의 한국어 뜻(조사는 문법 기능, 예: は→"~은/는"). 같은 단어의 나머지 글자 조각과 구두점·공백은 빈 문자열' },
       },
-      required: ['jp', 'romaji'],
+      required: ['jp', 'romaji', 'ko'],
       additionalProperties: false,
     },
   };
@@ -124,6 +128,11 @@ function systemPrompt() {
     '  (구두점·공백·기호도 빠짐없이 각자 조각으로 포함). 구두점(。、！？「」 등)의 romaji는',
     '  반드시 빈 문자열 ""로 — "。"를 "."처럼 로마자 기호로 옮기지 말 것.',
     '- 조사(は·が·を·に 등)도 각각 독립된 한 조각이며 반드시 romaji를 채울 것.',
+    '- ko(그 조각의 한국어 뜻)는 "단어·조사 단위"로 그 단어가 시작하는 첫 조각에만 채우고,',
+    '  같은 단어의 나머지 글자 조각들은 ko를 빈 문자열로 둘 것 (뜻이 단어 시작 위치에 한 번만',
+    '  나타나도록). 조사는 한 글자짜리 조각 하나뿐이므로 그 조각에 문법 기능을 짧게 적을 것',
+    '  (예: は→"~은/는", を→"~을/를", に→"~에", が→"~이/가"). 예: 日本語 → 日(ni, ko:"일본어") /',
+    '  本(hon, ko:"") / 語(go, ko:""). どんな → ど(do, ko:"어떤") / ん(n, ko:"") / な(na, ko:"").',
     '',
     '매 턴마다 지정된 JSON 스키마로만 응답하십시오. 각 필드 규칙:',
     '1. correction_needed — 사용자의 직전 발화에 문법·조사·어휘 선택·경어·부자연스러운 어순 문제가 있으면 true.',
@@ -318,9 +327,15 @@ function renderRuby(jpText, chunks) {
 
   return chunks.map((c) => {
     const jp = esc(c.jp);
-    const rj = RUBY_PUNCT_RE.test(c.jp) ? '' : (c.romaji || '').trim();
-    if (!rj) return `<span class="ruby-plain">${jp}</span>`;
-    return `<span class="ruby-chunk"><span class="ruby-jp">${jp}</span><span class="ruby-romaji">${esc(rj)}</span></span>`;
+    const isPunct = RUBY_PUNCT_RE.test(c.jp);
+    const rj = isPunct ? '' : (c.romaji || '').trim();
+    const ko = isPunct ? '' : (c.ko || '').trim();
+    if (!rj && !ko) return `<span class="ruby-plain">${jp}</span>`;
+    return `<span class="ruby-chunk">`
+      + `<span class="ruby-jp">${jp}</span>`
+      + (rj ? `<span class="ruby-romaji">${esc(rj)}</span>` : '')
+      + (ko ? `<span class="ruby-ko">${esc(ko)}</span>` : '')
+      + `</span>`;
   }).join('');
 }
 
@@ -946,22 +961,22 @@ function greet() {
       correction_needed: false, corrected_jp: '', corrected_chunks: [], feedback_ko: '',
       reply_jp: 'こんにちは！日本語の会話練習を始めましょう。',
       reply_chunks: [
-        { jp: 'こ', romaji: 'ko' }, { jp: 'ん', romaji: 'n' }, { jp: 'に', romaji: 'ni' },
-        { jp: 'ち', romaji: 'chi' }, { jp: 'は', romaji: 'wa' }, { jp: '！', romaji: '' },
-        { jp: '日', romaji: 'ni' }, { jp: '本', romaji: 'hon' }, { jp: '語', romaji: 'go' },
-        { jp: 'の', romaji: 'no' }, { jp: '会', romaji: 'kai' }, { jp: '話', romaji: 'wa' },
-        { jp: '練', romaji: 'ren' }, { jp: '習', romaji: 'shuu' }, { jp: 'を', romaji: 'wo' },
-        { jp: '始', romaji: 'haji' }, { jp: 'め', romaji: 'me' }, { jp: 'ま', romaji: 'ma' },
-        { jp: 'しょう', romaji: 'shou' }, { jp: '。', romaji: '' },
+        { jp: 'こ', romaji: 'ko', ko: '안녕하세요' }, { jp: 'ん', romaji: 'n', ko: '' }, { jp: 'に', romaji: 'ni', ko: '' },
+        { jp: 'ち', romaji: 'chi', ko: '' }, { jp: 'は', romaji: 'wa', ko: '' }, { jp: '！', romaji: '', ko: '' },
+        { jp: '日', romaji: 'ni', ko: '일본어' }, { jp: '本', romaji: 'hon', ko: '' }, { jp: '語', romaji: 'go', ko: '' },
+        { jp: 'の', romaji: 'no', ko: '~의' }, { jp: '会', romaji: 'kai', ko: '회화' }, { jp: '話', romaji: 'wa', ko: '' },
+        { jp: '練', romaji: 'ren', ko: '연습' }, { jp: '習', romaji: 'shuu', ko: '' }, { jp: 'を', romaji: 'wo', ko: '~을/를' },
+        { jp: '始', romaji: 'haji', ko: '시작해요' }, { jp: 'め', romaji: 'me', ko: '' }, { jp: 'ま', romaji: 'ma', ko: '' },
+        { jp: 'しょう', romaji: 'shou', ko: '' }, { jp: '。', romaji: '', ko: '' },
       ],
       reply_ko: '안녕하세요! 일본어 회화 연습을 시작해 볼까요.',
       question_jp: '今日はどんな一日でしたか？',
       question_chunks: [
-        { jp: '今日', romaji: 'kyou' }, { jp: 'は', romaji: 'wa' },
-        { jp: 'ど', romaji: 'do' }, { jp: 'ん', romaji: 'n' }, { jp: 'な', romaji: 'na' },
-        { jp: '一', romaji: 'ichi' }, { jp: '日', romaji: 'nichi' },
-        { jp: 'で', romaji: 'de' }, { jp: 'し', romaji: 'shi' }, { jp: 'た', romaji: 'ta' },
-        { jp: 'か', romaji: 'ka' }, { jp: '？', romaji: '' },
+        { jp: '今日', romaji: 'kyou', ko: '오늘' }, { jp: 'は', romaji: 'wa', ko: '~은/는' },
+        { jp: 'ど', romaji: 'do', ko: '어떤' }, { jp: 'ん', romaji: 'n', ko: '' }, { jp: 'な', romaji: 'na', ko: '' },
+        { jp: '一', romaji: 'ichi', ko: '하루' }, { jp: '日', romaji: 'nichi', ko: '' },
+        { jp: 'で', romaji: 'de', ko: '~였다' }, { jp: 'し', romaji: 'shi', ko: '' }, { jp: 'た', romaji: 'ta', ko: '' },
+        { jp: 'か', romaji: 'ka', ko: '~까?' }, { jp: '？', romaji: '', ko: '' },
       ],
       question_ko: '오늘은 어떤 하루였나요?',
     },
