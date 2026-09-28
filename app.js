@@ -1213,11 +1213,23 @@ function turnJpText(turn) {
   return [d.corrected_jp, d.reply_jp, d.question_jp].filter(Boolean).join(' ');
 }
 
+/**
+ * 단어가 문장 속에 등장했는지 확인한다. 사전형 그대로 완전히 일치하는 경우는 드물다 —
+ * 동사/형용사는 실제 대화에서 거의 항상 활용된 형태(食べる→食べました 등)로 등장하기
+ * 때문에, 한자로 시작하는 단어는 어미가 바뀌어도 보통 그대로 남는 한자 어간까지만으로도
+ * 등장 여부를 판단한다 (食べる → "食べ"만 있어도 사용한 것으로 인정).
+ */
+function wordUsedIn(jp, text) {
+  if (text.includes(jp)) return true;
+  const kanjiStem = jp.match(/^[一-鿿]+/)?.[0];
+  return !!kanjiStem && kanjiStem.length < jp.length && text.includes(kanjiStem);
+}
+
 /** 연습 세션 동안(practiceStartTurn 이후) 오늘의 단어가 실제로 대화에 등장했는지 정리한다. */
 function buildPracticeSummary() {
   const sessionTurns = state.turns.slice(state.practiceStartTurn ?? 0);
   const sessionText = sessionTurns.map(turnJpText).join(' ');
-  return state.practiceWords.map((w) => ({ ...w, used: sessionText.includes(w.jp) }));
+  return state.practiceWords.map((w) => ({ ...w, used: wordUsedIn(w.jp, sessionText) }));
 }
 
 function endPractice() {
