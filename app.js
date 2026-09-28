@@ -107,12 +107,22 @@ function systemPrompt() {
     '학습자가 일본어 문장을 이해하는 유일한 수단이므로, 모든 *_chunks 배열을 절대 비우지 말 것.',
     '로마자는 수정 헵번식으로 쓰고 장음은 겹모음으로 적을 것 (예: きょう→kyou, がっこう→gakkou, ラーメン→raamen).',
     '',
-    '*_chunks 배열 공통 규칙 (화면에서 후리가나처럼 각 조각 바로 아래에 그 조각의 로마자를 보여주는 데 씀):',
-    '- 자연스러운 단어/구 단위로 나눌 것 (예: 今日/は/どんな/一日/でした/か). 조사(は·が·を·に 등)는 그 자체로',
-    '  한 조각, 활용형 동사·형용사는 어간+어미를 붙여서 한 조각으로 — 발음이 자연스럽게 끊기는 단위로.',
+    '*_chunks 배열 공통 규칙 (화면에서 진짜 후리가나처럼 일본어 글자 하나하나 바로 아래에 그 글자의',
+    '발음을 보여주는 데 씀 — 단어 단위가 아니라 최대한 잘게, 글자 단위로 나눌 것):',
+    '- 원칙: 한자 한 글자 = 한 조각, 히라가나·가타카나 한 글자 = 한 조각. 절대 단어 전체를 통째로',
+    '  한 조각으로 묶지 말 것 (예: 日本語는 日/本/語 세 조각으로, 今日は는 今日/は로).',
+    '- 예외 1 (요음) — 작은 ゃゅょ(きゃ·しゅ·ちょ 등)는 분리하면 발음이 깨지므로 바로 앞 글자와',
+    '  합쳐 한 조각으로. 예: 「きゃ」→ 한 조각, romaji "kya".',
+    '- 예외 2 (촉음) — 작은 っ은 그 자체로 소리가 없고 뒤 글자의 자음을 겹치게 하므로, 바로 뒤',
+    '  글자와 합쳐 한 조각으로 하고 그 자음을 겹쳐 적을 것. 예: がっこう → が(ga) / っこ(kko) / う(u).',
+    '- 예외 3 (장음) — 가타카나의 장음 부호 ー나, 앞 글자의 모음을 그대로 늘이는 글자는 바로 앞',
+    '  글자와 합쳐 모음을 늘여 적을 것. 예: ラーメン → ラー(raa) / メ(me) / ン(n).',
+    '- 예외 4 (숙자훈) — 今日(kyou)·一日(ichinichi)처럼 한자별로 쪼개면 의미가 깨지는 고유 읽기',
+    '  단어만 예외적으로 단어 전체를 한 조각으로 묶을 것. 흔치 않은 경우에만 적용.',
     '- 조각들의 jp를 순서대로 그대로 이어 붙이면 원문 문장과 한 글자도 틀림없이 같아야 한다',
-    '  (구두점·공백·기호도 빠짐없이 각자 조각으로 포함, 그런 조각의 romaji는 빈 문자열 "").',
-    '- 한자 없이 히라가나/가타카나로만 된 조각도 반드시 romaji를 채울 것.',
+    '  (구두점·공백·기호도 빠짐없이 각자 조각으로 포함). 구두점(。、！？「」 등)의 romaji는',
+    '  반드시 빈 문자열 ""로 — "。"를 "."처럼 로마자 기호로 옮기지 말 것.',
+    '- 조사(は·が·を·に 등)도 각각 독립된 한 조각이며 반드시 romaji를 채울 것.',
     '',
     '매 턴마다 지정된 JSON 스키마로만 응답하십시오. 각 필드 규칙:',
     '1. correction_needed — 사용자의 직전 발화에 문법·조사·어휘 선택·경어·부자연스러운 어순 문제가 있으면 true.',
@@ -283,6 +293,9 @@ function userNode(turn) {
  * 바로 아래에 붙인다. chunks가 없거나 원문과 이어붙인 결과가 다르면(모델이 규칙을
  * 어긴 경우) 안전하게 원문 전체 텍스트만 보여준다.
  */
+// 구두점/공백/기호만으로 된 조각은 모델이 로마자를 채워 보내도 무시한다 (예: 。→"." 같은 습관 방지).
+const RUBY_PUNCT_RE = /^[\s。、！？「」『』・…—―ー～〜.,!?"'()（）\[\]{}:;：；\-–]+$/;
+
 function renderRuby(jpText, chunks) {
   const valid = Array.isArray(chunks) && chunks.length > 0
     && chunks.map((c) => c?.jp ?? '').join('') === jpText;
@@ -291,7 +304,7 @@ function renderRuby(jpText, chunks) {
 
   return chunks.map((c) => {
     const jp = esc(c.jp);
-    const rj = (c.romaji || '').trim();
+    const rj = RUBY_PUNCT_RE.test(c.jp) ? '' : (c.romaji || '').trim();
     if (!rj) return `<span class="ruby-plain">${jp}</span>`;
     return `<span class="ruby-chunk"><span class="ruby-jp">${jp}</span><span class="ruby-romaji">${esc(rj)}</span></span>`;
   }).join('');
@@ -858,17 +871,22 @@ function greet() {
       correction_needed: false, corrected_jp: '', corrected_chunks: [], feedback_ko: '',
       reply_jp: 'こんにちは！日本語の会話練習を始めましょう。',
       reply_chunks: [
-        { jp: 'こんにちは', romaji: 'konnichiwa' }, { jp: '！', romaji: '' },
-        { jp: '日本語', romaji: 'nihongo' }, { jp: 'の', romaji: 'no' },
-        { jp: '会話', romaji: 'kaiwa' }, { jp: '練習', romaji: 'renshuu' },
-        { jp: 'を', romaji: 'wo' }, { jp: '始めましょう', romaji: 'hajimemashou' }, { jp: '。', romaji: '' },
+        { jp: 'こ', romaji: 'ko' }, { jp: 'ん', romaji: 'n' }, { jp: 'に', romaji: 'ni' },
+        { jp: 'ち', romaji: 'chi' }, { jp: 'は', romaji: 'wa' }, { jp: '！', romaji: '' },
+        { jp: '日', romaji: 'ni' }, { jp: '本', romaji: 'hon' }, { jp: '語', romaji: 'go' },
+        { jp: 'の', romaji: 'no' }, { jp: '会', romaji: 'kai' }, { jp: '話', romaji: 'wa' },
+        { jp: '練', romaji: 'ren' }, { jp: '習', romaji: 'shuu' }, { jp: 'を', romaji: 'wo' },
+        { jp: '始', romaji: 'haji' }, { jp: 'め', romaji: 'me' }, { jp: 'ま', romaji: 'ma' },
+        { jp: 'しょう', romaji: 'shou' }, { jp: '。', romaji: '' },
       ],
       reply_ko: '안녕하세요! 일본어 회화 연습을 시작해 볼까요.',
       question_jp: '今日はどんな一日でしたか？',
       question_chunks: [
         { jp: '今日', romaji: 'kyou' }, { jp: 'は', romaji: 'wa' },
-        { jp: 'どんな', romaji: 'donna' }, { jp: '一日', romaji: 'ichinichi' },
-        { jp: 'でした', romaji: 'deshita' }, { jp: 'か', romaji: 'ka' }, { jp: '？', romaji: '' },
+        { jp: 'ど', romaji: 'do' }, { jp: 'ん', romaji: 'n' }, { jp: 'な', romaji: 'na' },
+        { jp: '一', romaji: 'ichi' }, { jp: '日', romaji: 'nichi' },
+        { jp: 'で', romaji: 'de' }, { jp: 'し', romaji: 'shi' }, { jp: 'た', romaji: 'ta' },
+        { jp: 'か', romaji: 'ka' }, { jp: '？', romaji: '' },
       ],
       question_ko: '오늘은 어떤 하루였나요?',
     },
