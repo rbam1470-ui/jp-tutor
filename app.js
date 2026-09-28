@@ -1,0 +1,1103 @@
+/* ─────────────────────────────────────────────────────────────
+   일본어 회화 튜터 — Anthropic Messages API (브라우저 직접 호출)
+   ───────────────────────────────────────────────────────────── */
+'use strict';
+
+/* ── 1. 설정 ───────────────────────────────────────────────── */
+
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const API_VERSION = '2023-06-01';
+
+/**
+ * 모델별 지원 파라미터.
+ *   effort   : output_config.effort — Haiku 4.5는 미지원이므로 null (보내면 400).
+ *   thinking : Sonnet 5 / Opus 5는 확장 사고가 기본 ON. 회화는 지연시간이 중요하고
+ *              사고가 필요한 작업이 아니라 disabled + effort:low 로 응답을 빠르게 한다.
+ *              (Opus 5는 effort가 high 이하일 때만 disabled 허용)
+ */
+const MODELS = {
+  'claude-sonnet-5': {
+    label: 'Claude Sonnet 5 — 균형 (권장)',
+    help: '속도·품질·비용의 균형. 회화 연습에 가장 적합합니다. ($2 / $10 per MTok)',
+    effort: 'low', thinking: 'disabled',
+  },
+  'claude-opus-5': {
+    label: 'Claude Opus 5 — 최고 품질',
+    help: '교정 설명이 가장 정확하고 섬세합니다. 조금 느리고 비쌉니다. ($5 / $25 per MTok)',
+    effort: 'low', thinking: 'disabled',
+  },
+  'claude-haiku-4-5': {
+    label: 'Claude Haiku 4.5 — 가장 빠름',
+    help: '응답이 가장 빠르고 저렴합니다. 교정의 깊이는 얕습니다. ($1 / $5 per MTok)',
+    effort: null, thinking: null,
+  },
+};
+const DEFAULT_MODEL = 'claude-sonnet-5';
+
+const LEVELS = {
+  beginner:     '초급 (JLPT N5~N4). 기초 문형과 쉬운 어휘만 사용하고, 한 번에 한 가지만 가르칠 것.',
+  intermediate: '중급 (JLPT N3~N2). 일상 회화 속도로 말하고, 자연스러운 관용 표현을 적극적으로 소개할 것.',
+  advanced:     '고급 (JLPT N1). 뉘앙스 차이, 경어(敬語), 비즈니스/격식 표현의 미묘한 차이까지 지적할 것.',
+};
+
+/** 응답 스키마 — output_config.format 으로 JSON 구조를 강제한다. */
+const SCHEMA = {
+  type: 'object',
+  properties: {
+    correction_needed: { type: 'boolean', description: '사용자의 직전 일본어 발화에 고칠 점이 있으면 true' },
+    corrected_jp:      { type: 'string',  description: '교정된 전체 일본어 문장. 고칠 점이 없으면 빈 문자열' },
+    corrected_romaji:  { type: 'string',  description: 'corrected_jp 전체를 로마자(헵번식)로 표기한 발음. corrected_jp가 빈 문자열이면 빈 문자열' },
+    feedback_ko:       { type: 'string',  description: '무엇이 왜 어색한지 한국어 설명. 없으면 빈 문자열' },
+    reply_jp:          { type: 'string',  description: '튜터의 자연스러운 일본어 응답 (1~2문장)' },
+    reply_romaji:      { type: 'string',  description: 'reply_jp 전체를 로마자(헵번식)로 표기한 발음' },
+    reply_ko:          { type: 'string',  description: 'reply_jp 의 한국어 번역' },
+    question_jp:       { type: 'string',  description: '대화를 이어가기 위한 추가 질문 1개 (일본어)' },
+    question_romaji:   { type: 'string',  description: 'question_jp 전체를 로마자(헵번식)로 표기한 발음' },
+    question_ko:       { type: 'string',  description: 'question_jp 의 한국어 번역' },
+  },
+  required: [
+    'correction_needed', 'corrected_jp', 'corrected_romaji', 'feedback_ko',
+    'reply_jp', 'reply_romaji', 'reply_ko',
+    'question_jp', 'question_romaji', 'question_ko',
+  ],
+  additionalProperties: false,
+};
+
+/** 오늘의 학습 단어로 대화 연습 중일 때, 시스템 프롬프트에 덧붙일 지시문. */
+function practiceBlock() {
+  if (!state.practiceMode || !state.practiceWords.length) return '';
+  const list = state.practiceWords.map((w) => `${w.jp}(${w.romaji}, ${w.ko})`).join(', ');
+  return [
+    '',
+    '[오늘의 학습 단어 — 이번 대화에서 반드시 활용할 것]',
+    list,
+    '- 위 단어들을 자연스럽게 대화에 섞어 쓰고, reply_jp 또는 question_jp에 매 턴 최소 1개 이상 포함시킬 것.',
+    '- 사용자에게도 이 단어들을 써 보도록 자연스럽게 유도할 것 (질문을 그 단어와 관련된 주제로 던지는 식으로).',
+    '- 사용자가 이 단어들 중 하나를 정확히 사용했다면 feedback_ko 맨 앞에 짧게 칭찬할 것 (예: "「食べる」를 정확히 쓰셨네요!").',
+  ].join('\n');
+}
+
+function systemPrompt() {
+  return [
+    '당신은 한국어 모어 화자를 1:1로 가르치는 친절하고 실용적인 일본어 회화 튜터입니다.',
+    `학습자 수준: ${LEVELS[state.level] || LEVELS.intermediate}`,
+    '',
+    '중요: 학습자는 히라가나·가타카나를 전혀 읽지 못합니다. 로마자(알파벳) 발음 표기가',
+    '학습자가 일본어 문장을 이해하는 유일한 수단이므로, 모든 로마자 필드를 절대 비우지 말 것.',
+    '로마자는 수정 헵번식으로 쓰고 장음은 겹모음으로 적을 것 (예: きょう→kyou, がっこう→gakkou, ラーメン→raamen).',
+    '',
+    '매 턴마다 지정된 JSON 스키마로만 응답하십시오. 각 필드 규칙:',
+    '1. correction_needed — 사용자의 직전 발화에 문법·조사·어휘 선택·경어·부자연스러운 어순 문제가 있으면 true.',
+    '   사용자가 한국어로 질문했거나, 발화가 이미 자연스러우면 false.',
+    '2. corrected_jp — 원래 의도를 살린 자연스러운 일본어 전체 문장. correction_needed가 false면 빈 문자열.',
+    '3. corrected_romaji — corrected_jp의 로마자 발음. corrected_jp가 빈 문자열이면 빈 문자열.',
+    '4. feedback_ko — 무엇이 왜 어색했는지 한국어로 1~3문장. 일본어 단어를 언급할 때는 항상',
+    '   괄호로 로마자 발음을 함께 적을 것 (예: 見ました(mimashita)). 규칙을 짧고 구체적으로. false면 빈 문자열.',
+    '5. reply_jp — 튜터로서 대화를 이어가는 자연스러운 일본어 응답 1~2문장. 학습자 수준에 맞춘 어휘를 쓸 것.',
+    '6. reply_romaji — reply_jp 전체의 로마자 발음. 비워두지 말 것.',
+    '7. reply_ko — reply_jp의 한국어 번역.',
+    '8. question_jp — 대화를 이어가기 위한 추가 질문을 정확히 1개만. 학습자가 대답하기 쉬운 열린 질문으로.',
+    '9. question_romaji / question_ko — 8번에 대한 로마자 발음과 한국어 번역.',
+    practiceBlock(),
+    '',
+    '태도: 격려하되 과장하지 말 것. 훈계조·장황한 설명 금지. 사용자가 한국어로 물으면 한국어로 답하되,',
+    'reply_jp는 항상 일본어로 유지하고 대화를 일본어로 되돌릴 것.',
+    'JSON 외의 텍스트나 내부/시스템 XML 태그를 출력하지 마십시오.',
+  ].join('\n');
+}
+
+const MAX_HISTORY = 24;   // API로 보낼 최근 메시지 개수 (user+assistant 합산)
+
+/* ── 2. 상태 ───────────────────────────────────────────────── */
+
+const state = {
+  apiKey: '',
+  model: DEFAULT_MODEL,
+  level: 'intermediate',
+  rate: 0.95,
+  autoTts: true,
+  history: [],   // Anthropic messages 배열 [{role, content}]
+  turns: [],     // 화면 렌더용 [{kind, ...}]
+  busy: false,
+  recording: false,
+  practiceMode: false,   // 오늘의 단어로 대화 연습 중인지
+  practiceWords: [],     // 연습 중인 단어 목록 (vocab.js 항목)
+};
+
+const LS = { key: 'jt.key', ek: 'jt.ek', settings: 'jt.settings', chat: 'jt.chat' };
+
+/* ── 3. API 키 암호화 저장 (AES-GCM / Web Crypto) ───────────── */
+/* 주의: 같은 브라우저에서 개발자도구를 열 수 있으면 복호화가 가능하다.
+   평문 노출만 막는 수준이며, 공유 기기에서는 '키 삭제'를 사용할 것. */
+
+const b64 = {
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))),
+  dec: (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0)),
+};
+
+const hasSubtle = !!(window.crypto && window.crypto.subtle);
+
+async function cryptoKey() {
+  const stored = localStorage.getItem(LS.ek);
+  if (stored) {
+    return crypto.subtle.importKey('raw', b64.dec(stored), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  }
+  const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  localStorage.setItem(LS.ek, b64.enc(await crypto.subtle.exportKey('raw', key)));
+  return crypto.subtle.importKey('raw', b64.dec(localStorage.getItem(LS.ek)), 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+async function saveApiKey(plain) {
+  if (!plain) { localStorage.removeItem(LS.key); return; }
+  if (!hasSubtle) {                       // http:// 등 비보안 컨텍스트 폴백
+    localStorage.setItem(LS.key, 'p:' + btoa(unescape(encodeURIComponent(plain))));
+    return;
+  }
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, await cryptoKey(), new TextEncoder().encode(plain),
+  );
+  localStorage.setItem(LS.key, 'e:' + b64.enc(iv) + '.' + b64.enc(ct));
+}
+
+async function loadApiKey() {
+  const raw = localStorage.getItem(LS.key);
+  if (!raw) return '';
+  try {
+    if (raw.startsWith('p:')) return decodeURIComponent(escape(atob(raw.slice(2))));
+    const [ivB, ctB] = raw.slice(2).split('.');
+    const pt = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: b64.dec(ivB) }, await cryptoKey(), b64.dec(ctB),
+    );
+    return new TextDecoder().decode(pt);
+  } catch (e) {
+    console.warn('[jt] 저장된 키를 복호화하지 못했습니다. 다시 입력해 주세요.', e);
+    localStorage.removeItem(LS.key);
+    return '';
+  }
+}
+
+/* ── 4. DOM 참조 ───────────────────────────────────────────── */
+
+const $ = (id) => document.getElementById(id);
+const el = {
+  chat: $('chat'), input: $('input'), composer: $('composer'),
+  btnSend: $('btnSend'), btnMic: $('btnMic'), status: $('statusLine'),
+  btnSettings: $('btnSettings'), btnReset: $('btnReset'), btnAutoTts: $('btnAutoTts'),
+  backdrop: $('settingsBackdrop'), btnClose: $('btnCloseSettings'),
+  apiKeyInput: $('apiKeyInput'), btnToggleKey: $('btnToggleKey'),
+  modelSelect: $('modelSelect'), modelHelp: $('modelHelp'), levelSelect: $('levelSelect'),
+  rateInput: $('rateInput'), rateOut: $('rateOut'),
+  btnSave: $('btnSaveSettings'), btnClearKey: $('btnClearKey'),
+  caps: $('capabilities'), starters: $('starters'),
+
+  tabChat: $('tabChat'), tabStudy: $('tabStudy'), studyBadge: $('studyBadge'),
+  chatView: $('chatView'), studyView: $('studyView'), studyContent: $('studyContent'),
+  practiceBanner: $('practiceBanner'), practiceBannerCount: $('practiceBannerCount'), btnEndPractice: $('btnEndPractice'),
+
+  quizBackdrop: $('quizBackdrop'), quizTitle: $('quizTitle'),
+  quizProgressBar: $('quizProgressBar'), quizBody: $('quizBody'), btnCloseQuiz: $('btnCloseQuiz'),
+};
+
+/* ── 5. 렌더링 ─────────────────────────────────────────────── */
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function atBottom() {
+  return el.chat.scrollHeight - el.chat.scrollTop - el.chat.clientHeight < 120;
+}
+
+function scrollDown(force) {
+  if (force || atBottom()) {
+    requestAnimationFrame(() => { el.chat.scrollTop = el.chat.scrollHeight; });
+  }
+}
+
+function renderAll() {
+  el.chat.innerHTML = '';
+  state.turns.forEach(addTurnNode);
+  el.starters.hidden = state.turns.filter((t) => t.kind === 'user').length > 0;
+  scrollDown(true);
+}
+
+function addTurn(turn, { persist = true } = {}) {
+  state.turns.push(turn);
+  addTurnNode(turn);
+  if (turn.kind === 'user') el.starters.hidden = true;
+  if (persist) persistChat();
+  scrollDown(turn.kind === 'user');
+}
+
+function addTurnNode(turn) {
+  let node;
+  if (turn.kind === 'user') node = userNode(turn);
+  else if (turn.kind === 'bot') node = botNode(turn);
+  else node = noticeNode(turn);
+  el.chat.appendChild(node);
+}
+
+function userNode(turn) {
+  const row = document.createElement('div');
+  row.className = 'row user';
+  row.innerHTML = `<div class="bubble"><div class="jp">${esc(turn.text)}</div></div>`;
+  return row;
+}
+
+function botNode(turn) {
+  const d = turn.data;
+  const row = document.createElement('div');
+  row.className = 'row bot';
+
+  let html = '';
+
+  if (d.correction_needed && (d.corrected_jp || d.feedback_ko)) {
+    html += '<div class="correction">';
+    html += '<div class="c-title">교정 및 피드백</div>';
+    if (d.corrected_jp) html += `<div class="c-fix">${esc(d.corrected_jp)}</div>`;
+    if (d.corrected_romaji) html += `<div class="c-romaji">${esc(d.corrected_romaji)}</div>`;
+    if (d.feedback_ko) html += `<ul><li>${esc(d.feedback_ko)}</li></ul>`;
+    html += '</div>';
+  } else if (turn.hadUserInput) {
+    html += '<div class="correction good"><div class="c-title">자연스러워요 👍</div></div>';
+  }
+
+  if (d.reply_jp) {
+    html += `<div class="jp">${esc(d.reply_jp)}</div>`;
+    if (d.reply_romaji) html += `<div class="romaji">${esc(d.reply_romaji)}</div>`;
+  }
+  if (d.question_jp) {
+    html += `<div class="jp q-jp">${esc(d.question_jp)}</div>`;
+    if (d.question_romaji) html += `<div class="romaji">${esc(d.question_romaji)}</div>`;
+  }
+
+  const ko = [d.reply_ko, d.question_ko].filter(Boolean).join(' ');
+  if (ko) html += `<div class="ko">${esc(ko)}</div>`;
+
+  html += '<div class="bubble-tools">'
+        + '<button class="tool-btn" type="button" data-act="speak">🔈 다시 듣기</button>'
+        + '<button class="tool-btn" type="button" data-act="copy">복사</button>'
+        + '</div>';
+
+  row.innerHTML = `<div class="bubble">${html}</div>`;
+
+  const jpText = speakText(d);
+  row.querySelector('[data-act="speak"]').addEventListener('click', (e) => speak(jpText, e.currentTarget));
+  row.querySelector('[data-act="copy"]').addEventListener('click', (e) => {
+    navigator.clipboard?.writeText(jpText);
+    e.currentTarget.textContent = '복사됨';
+    setTimeout(() => { e.currentTarget.textContent = '복사'; }, 1200);
+  });
+  return row;
+}
+
+function noticeNode(turn) {
+  const div = document.createElement('div');
+  div.className = 'notice' + (turn.error ? ' error' : '');
+  div.innerHTML = turn.html || esc(turn.text);
+  if (turn.retry) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = '다시 시도';
+    b.addEventListener('click', () => { div.remove(); retryLast(); });
+    div.appendChild(b);
+  }
+  return div;
+}
+
+/** TTS로 읽을 일본어만 뽑는다 (한국어 피드백은 제외). */
+function speakText(d) {
+  return [d.reply_jp, d.question_jp].filter(Boolean).join(' ');
+}
+
+/* 타이핑 인디케이터 */
+let typingNode = null;
+function showTyping() {
+  typingNode = document.createElement('div');
+  typingNode.className = 'row bot';
+  typingNode.innerHTML = '<div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>';
+  el.chat.appendChild(typingNode);
+  scrollDown(true);
+}
+function hideTyping() {
+  typingNode?.remove();
+  typingNode = null;
+}
+
+/* ── 6. Claude API 호출 ────────────────────────────────────── */
+
+/** 현재 선택된 모델이 지원하는 effort/thinking 파라미터를 body에 덧붙인다. */
+function applyModelParams(body) {
+  const spec = MODELS[state.model] || MODELS[DEFAULT_MODEL];
+  if (spec.effort) body.output_config.effort = spec.effort;
+  if (spec.thinking) body.thinking = { type: spec.thinking };
+  return body;
+}
+
+function buildBody() {
+  return applyModelParams({
+    model: state.model,
+    max_tokens: 1600,
+    system: systemPrompt(),
+    messages: state.history.slice(-MAX_HISTORY),
+    output_config: { format: { type: 'json_schema', schema: SCHEMA } },
+  });
+}
+
+/** 회화 응답 생성과 단어 자동 생성이 공유하는 저수준 호출부. */
+async function callClaudeRaw(body) {
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': state.apiKey,
+      'anthropic-version': API_VERSION,
+      // 브라우저에서 직접 호출하기 위해 필요한 헤더
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json())?.error?.message || ''; } catch { /* 본문 없음 */ }
+    throw new ApiError(res.status, detail);
+  }
+
+  const msg = await res.json();
+
+  // refusal은 HTTP 200으로 온다 — content를 읽기 전에 먼저 확인
+  if (msg.stop_reason === 'refusal') {
+    throw new ApiError(0, '모델이 이 요청에 응답하지 않았습니다. 다른 표현으로 다시 말해 주세요.');
+  }
+  return msg;
+}
+
+async function callClaude() {
+  const msg = await callClaudeRaw(buildBody());
+  const text = (msg.content || []).find((b) => b.type === 'text')?.text || '';
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    if (msg.stop_reason === 'max_tokens') {
+      throw new ApiError(0, '응답이 너무 길어 잘렸습니다. 짧게 다시 말해 주세요.');
+    }
+    throw new ApiError(0, '응답 형식을 해석하지 못했습니다.');
+  }
+  return data;
+}
+
+/* ── 6b. 단어 자동 생성 (단어 은행이 바닥나면 Claude가 이어서 채운다) ── */
+
+const VOCAB_GEN_SCHEMA = {
+  type: 'object',
+  properties: {
+    words: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        properties: {
+          jp:     { type: 'string', description: '일본어 단어 또는 짧은 표현' },
+          romaji: { type: 'string', description: '수정 헵번식 로마자 발음 (장음은 겹모음으로)' },
+          ko:     { type: 'string', description: '한국어 뜻. 이미 있는 단어와 뜻이 겹치면 괄호로 구분 (예: "눈 (신체)")' },
+          cat:    { type: 'string', description: '주제 카테고리, 한국어 2~4자 (예: 여행, 날씨, 쇼핑)' },
+        },
+        required: ['jp', 'romaji', 'ko', 'cat'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['words'],
+  additionalProperties: false,
+};
+
+/**
+ * 단어 은행이 바닥났을 때 부족한 만큼 새 단어를 생성한다.
+ * srs.js의 refillVocabIfNeeded()가 앱 시작 시 백그라운드에서 호출한다.
+ * @param {number} count 필요한 단어 수
+ * @returns {Promise<Array<{jp,romaji,ko,cat}>>}
+ */
+async function requestMoreVocab(count) {
+  if (!state.apiKey) return [];
+
+  const existing = allWords().map((w) => w.jp);
+  // 컨텍스트 크기를 무한정 늘리지 않도록 최근 400개까지만 중복 검사에 사용한다.
+  const recentTerms = existing.slice(-400);
+  const batchNum = Math.floor(existing.length / DAILY_GOAL) + 1;
+  const ask = count + 3; // 모델이 중복/부적합으로 일부 걸러질 것을 대비한 여유분
+
+  const body = applyModelParams({
+    model: state.model,
+    max_tokens: 2000,
+    system: [
+      '당신은 일본어 학습 앱의 단어 은행을 채우는 어휘 큐레이터입니다.',
+      '실생활 회화에서 자주 쓰이는 실용적인 단어/짧은 표현만 고르십시오.',
+      '아래 [이미 있는 단어] 목록과 절대 중복되지 않게 새 단어를 고르십시오 (같은 단어, 같은 뜻 모두 금지).',
+      `이번은 ${batchNum}번째 확장 배치입니다. 배치 번호가 커질수록 JLPT N5→N4→N3로 난이도를 서서히 올리십시오.`,
+      '로마자는 수정 헵번식(장음은 겹모음, 예: きょう→kyou)으로 표기하고, 한글 뜻이 기존 단어와 겹치면',
+      '괄호로 구분하십시오 (예: 雪는 "눈 (날씨)", 目는 "눈 (신체)").',
+    ].join('\n'),
+    messages: [{
+      role: 'user',
+      content: `[이미 있는 단어]\n${recentTerms.join(', ')}\n\n위와 겹치지 않는 새로운 일본어 회화 단어를 ${ask}개 만들어 주세요.`,
+    }],
+    output_config: { format: { type: 'json_schema', schema: VOCAB_GEN_SCHEMA } },
+  });
+
+  const msg = await callClaudeRaw(body);
+  const text = (msg.content || []).find((b) => b.type === 'text')?.text || '';
+  const data = JSON.parse(text);
+
+  const existingSet = new Set(existing);
+  const unique = (data.words || []).filter((w) => w && w.jp && !existingSet.has(w.jp));
+  return unique.slice(0, count);
+}
+
+class ApiError extends Error {
+  constructor(status, detail) {
+    super(detail || `HTTP ${status}`);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+function errorMessage(err) {
+  if (err instanceof TypeError) {
+    return '네트워크 요청에 실패했습니다. 인터넷 연결을 확인하거나, 광고 차단·기업 프록시가 '
+         + '<code>api.anthropic.com</code> 호출을 막고 있는지 확인해 주세요.';
+  }
+  if (!(err instanceof ApiError)) return esc(err.message || '알 수 없는 오류');
+
+  switch (err.status) {
+    case 401: return 'API 키가 올바르지 않습니다. <b>설정 ⚙️</b>에서 키를 다시 확인해 주세요.';
+    case 403: return '이 키에는 접근 권한이 없습니다. Anthropic 콘솔에서 키 권한을 확인해 주세요.';
+    case 404: return `모델 <b>${esc(state.model)}</b> 을(를) 사용할 수 없습니다. 설정에서 다른 모델을 선택해 주세요.`;
+    case 400: return `요청이 거부되었습니다.<br><small>${esc(err.detail)}</small>`;
+    case 413: return '대화가 너무 길어졌습니다. 대화를 초기화해 주세요.';
+    case 429: return '요청 한도를 초과했습니다 (rate limit). 잠시 후 다시 시도해 주세요.';
+    case 529: return 'Anthropic 서버가 혼잡합니다. 잠시 후 다시 시도해 주세요.';
+    default:
+      if (err.status >= 500) return `서버 오류 (${err.status}). 잠시 후 다시 시도해 주세요.`;
+      return esc(err.message);
+  }
+}
+
+/* ── 7. 메시지 전송 ────────────────────────────────────────── */
+
+async function send(text) {
+  text = (text || '').trim();
+  if (!text || state.busy) return;
+
+  if (!state.apiKey) {
+    openSettings();
+    addTurn({ kind: 'notice', text: '먼저 Anthropic API 키를 등록해 주세요.', error: true });
+    return;
+  }
+
+  stopRecording();
+  synth?.cancel();
+
+  state.history.push({ role: 'user', content: text });
+  addTurn({ kind: 'user', text });
+  el.input.value = '';
+  autoGrow();
+
+  await runTurn();
+}
+
+/** 히스토리 마지막이 user 메시지인 상태에서 응답을 받아 온다. 재시도도 이 함수를 재사용. */
+async function runTurn() {
+  if (state.busy) return;
+  setBusy(true);
+  showTyping();
+
+  try {
+    const data = await callClaude();
+    hideTyping();
+
+    // 모델이 실제로 생성한 원문(JSON)을 그대로 히스토리에 넣어야 다음 턴 맥락이 유지된다.
+    state.history.push({ role: 'assistant', content: JSON.stringify(data) });
+
+    addTurn({ kind: 'bot', data, hadUserInput: true });
+
+    if (state.autoTts) speak(speakText(data));
+  } catch (err) {
+    hideTyping();
+    console.error('[jt]', err);
+    // user 메시지는 히스토리에 남겨 두고, '다시 시도'로 같은 턴을 재요청한다.
+    addTurn({ kind: 'notice', html: errorMessage(err), error: true, retry: true });
+  } finally {
+    setBusy(false);
+    el.input.focus({ preventScroll: true });
+  }
+}
+
+function retryLast() {
+  const last = state.history[state.history.length - 1];
+  if (last && last.role === 'user') runTurn();
+}
+
+function setBusy(v) {
+  state.busy = v;
+  el.btnSend.disabled = v;
+  el.input.disabled = v;
+  setStatus(v ? '응답 생성 중…' : null);
+}
+
+/* ── 8. 음성 인식 (STT) ────────────────────────────────────── */
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null;
+
+function initSTT() {
+  if (!SR) { el.btnMic.hidden = true; return; }
+
+  recog = new SR();
+  recog.lang = 'ja-JP';
+  recog.continuous = false;
+  recog.interimResults = true;
+  recog.maxAlternatives = 1;
+
+  let finalText = '';
+
+  recog.addEventListener('start', () => {
+    finalText = '';
+    state.recording = true;
+    el.btnMic.classList.add('recording');
+    setStatus('🎙️ 듣는 중… 일본어로 말해 보세요');
+  });
+
+  recog.addEventListener('result', (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) finalText += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    el.input.value = (finalText + interim).trim();
+    autoGrow();
+  });
+
+  recog.addEventListener('error', (e) => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    const m = e.error === 'not-allowed' || e.error === 'service-not-allowed'
+      ? '마이크 권한이 거부되었습니다. 브라우저 주소창의 자물쇠 아이콘에서 마이크를 허용해 주세요.'
+      : `음성 인식 오류: ${e.error}`;
+    addTurn({ kind: 'notice', text: m, error: true });
+  });
+
+  recog.addEventListener('end', () => {
+    state.recording = false;
+    el.btnMic.classList.remove('recording');
+    setStatus(null);
+    const t = (finalText || el.input.value).trim();
+    if (t) send(t);            // 인식이 끝나면 자동 전송
+  });
+}
+
+function startRecording() {
+  if (!recog || state.recording || state.busy) return;
+  synth?.cancel();
+  unlockTts();
+  el.input.value = '';
+  try { recog.start(); } catch { /* 이미 시작된 경우 무시 */ }
+}
+
+function stopRecording() {
+  if (recog && state.recording) { try { recog.stop(); } catch { /* noop */ } }
+}
+
+/* ── 9. 음성 합성 (TTS) ────────────────────────────────────── */
+
+const synth = window.speechSynthesis;
+let jaVoice = null;
+let ttsUnlocked = false;
+
+const VOICE_PREFS = ['Kyoko', 'O-ren', 'Otoya', 'Google 日本語', 'Nanami', 'Ayumi', 'Haruka', 'Sayaka'];
+
+function pickVoice() {
+  if (!synth) return;
+  const voices = synth.getVoices().filter((v) => /^ja(-|_|$)/i.test(v.lang));
+  if (!voices.length) return;
+  jaVoice = voices.find((v) => VOICE_PREFS.some((p) => v.name.includes(p))) || voices[0];
+}
+
+/** iOS/Safari는 사용자 제스처 안에서 한 번 speak()를 호출해야 이후 재생이 허용된다. */
+function unlockTts() {
+  if (ttsUnlocked || !synth) return;
+  ttsUnlocked = true;
+  const u = new SpeechSynthesisUtterance('');
+  u.volume = 0;
+  try { synth.speak(u); } catch { /* noop */ }
+}
+
+function speak(text, btn) {
+  if (!synth || !text) return;
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ja-JP';
+  u.rate = state.rate;
+  u.pitch = 1;
+  if (!jaVoice) pickVoice();
+  if (jaVoice) u.voice = jaVoice;
+
+  if (btn) {
+    btn.classList.add('speaking');
+    const off = () => btn.classList.remove('speaking');
+    u.addEventListener('end', off);
+    u.addEventListener('error', off);
+  }
+  synth.speak(u);
+}
+
+/* ── 10. 설정 모달 ─────────────────────────────────────────── */
+
+function openSettings() {
+  el.apiKeyInput.value = state.apiKey;
+  el.modelSelect.value = state.model;
+  el.levelSelect.value = state.level;
+  el.rateInput.value = state.rate;
+  el.rateOut.textContent = Number(state.rate).toFixed(2);
+  updateModelHelp();
+  renderCaps();
+  el.backdrop.hidden = false;
+}
+
+function closeSettings() { el.backdrop.hidden = true; }
+
+function updateModelHelp() {
+  el.modelHelp.textContent = MODELS[el.modelSelect.value]?.help || '';
+}
+
+function renderCaps() {
+  const voices = synth ? synth.getVoices().filter((v) => /^ja(-|_|$)/i.test(v.lang)).length : 0;
+  const row = (ok, label) => `<div class="${ok ? 'yes' : 'no'}">${label}</div>`;
+  el.caps.innerHTML =
+      row(!!SR, `음성 인식 (STT): ${SR ? '사용 가능' : '이 브라우저는 미지원 — 키보드 입력을 사용하세요'}`)
+    + row(!!synth, `음성 합성 (TTS): ${synth ? `사용 가능 · 일본어 음성 ${voices}개` : '미지원'}`)
+    + row(hasSubtle, `키 암호화: ${hasSubtle ? 'AES-GCM' : 'base64 인코딩만 (HTTPS에서 열면 암호화됨)'}`);
+}
+
+async function saveSettings() {
+  const key = el.apiKeyInput.value.trim();
+  state.apiKey = key;
+  state.model = el.modelSelect.value;
+  state.level = el.levelSelect.value;
+  state.rate = parseFloat(el.rateInput.value);
+
+  await saveApiKey(key);
+  persistSettings();
+  setStatus(null);
+  closeSettings();
+}
+
+/* ── 11. 영속화 ────────────────────────────────────────────── */
+
+function persistSettings() {
+  localStorage.setItem(LS.settings, JSON.stringify({
+    model: state.model, level: state.level, rate: state.rate, autoTts: state.autoTts,
+  }));
+}
+
+function persistChat() {
+  try {
+    localStorage.setItem(LS.chat, JSON.stringify({
+      history: state.history,
+      turns: state.turns.filter((t) => t.kind !== 'notice'),
+    }));
+  } catch (e) {
+    console.warn('[jt] 대화 저장 실패 (용량 초과일 수 있습니다).', e);
+  }
+}
+
+function restore() {
+  try {
+    const s = JSON.parse(localStorage.getItem(LS.settings) || '{}');
+    if (MODELS[s.model]) state.model = s.model;
+    if (LEVELS[s.level]) state.level = s.level;
+    if (s.rate) state.rate = s.rate;
+    if (typeof s.autoTts === 'boolean') state.autoTts = s.autoTts;
+  } catch { /* 기본값 유지 */ }
+
+  try {
+    const c = JSON.parse(localStorage.getItem(LS.chat) || '{}');
+    if (Array.isArray(c.history)) state.history = c.history;
+    if (Array.isArray(c.turns)) state.turns = c.turns;
+  } catch { /* 기본값 유지 */ }
+}
+
+function resetChat() {
+  if (state.turns.length && !confirm('대화 내역을 모두 지울까요?')) return;
+  synth?.cancel();
+  endPractice();
+  state.history = [];
+  state.turns = [];
+  localStorage.removeItem(LS.chat);
+  greet();
+  renderAll();
+}
+
+function greet() {
+  // 로컬 인사말 — API 히스토리에는 넣지 않는다.
+  state.turns.push({
+    kind: 'bot',
+    hadUserInput: false,
+    data: {
+      correction_needed: false, corrected_jp: '', corrected_romaji: '', feedback_ko: '',
+      reply_jp: 'こんにちは！日本語の会話練習を始めましょう。',
+      reply_romaji: 'Konnichiwa! Nihongo no kaiwa renshuu o hajimemashou.',
+      reply_ko: '안녕하세요! 일본어 회화 연습을 시작해 볼까요.',
+      question_jp: '今日はどんな一日でしたか？',
+      question_romaji: 'Kyou wa donna ichinichi deshita ka?',
+      question_ko: '오늘은 어떤 하루였나요?',
+    },
+  });
+}
+
+/* ── 12. 입력창 동작 ───────────────────────────────────────── */
+
+function autoGrow() {
+  el.input.style.height = 'auto';
+  el.input.style.height = Math.min(el.input.scrollHeight, 140) + 'px';
+}
+
+const isTouch = window.matchMedia('(pointer: coarse)').matches;
+
+function setStatus(text) {
+  if (text) { el.status.textContent = text; el.status.className = ''; return; }
+  if (!state.apiKey) {
+    el.status.textContent = 'API 키를 등록해 주세요 — 설정 ⚙️';
+    el.status.className = 'err';
+  } else {
+    el.status.textContent = `준비 완료 · ${MODELS[state.model]?.label.split(' —')[0] || state.model}`;
+    el.status.className = 'ok';
+  }
+}
+
+/* ── 13. 단어 학습 (SRS) ───────────────────────────────────── */
+
+function switchView(view) {
+  const chat = view === 'chat';
+  el.chatView.hidden = !chat;
+  el.studyView.hidden = chat;
+  el.tabChat.setAttribute('aria-selected', String(chat));
+  el.tabStudy.setAttribute('aria-selected', String(!chat));
+  if (!chat) renderStudyView();
+}
+
+function wordCardHtml(w) {
+  return `
+    <div class="word-card">
+      <button class="w-speak" type="button" data-speak="${esc(w.jp)}" title="발음 듣기">🔈</button>
+      <div class="w-cat">${esc(w.cat)}</div>
+      <div class="w-jp">${esc(w.jp)}</div>
+      <div class="w-romaji">${esc(w.romaji)}</div>
+      <div class="w-ko">${esc(w.ko)}</div>
+    </div>`;
+}
+
+function renderStudyView() {
+  const stats = getStats();
+  const newWords = getTodayNewWords();
+  const due = getDueReviews();
+  const retry = getRetryQueue();
+
+  let html = `
+    <div class="stat-row">
+      <div class="stat-tile"><b>${stats.totalLearned}</b><span>학습한 단어</span></div>
+      <div class="stat-tile"><b>${stats.mastered}</b><span>마스터</span></div>
+      <div class="stat-tile"><b>${stats.dueReviewCount}</b><span>복습 대기</span></div>
+      <div class="stat-tile"><b>${stats.retryCount}</b><span>다시 풀기</span></div>
+    </div>
+
+    <div class="study-section">
+      <div class="study-section-head">
+        <h3>오늘의 새 단어</h3>
+        <span>${newWords.length}/${DAILY_GOAL}${stats.todayTested ? ' · 테스트 완료 ✅' : ''}</span>
+      </div>`;
+
+  if (newWords.length) {
+    html += `<div class="word-grid">${newWords.map(wordCardHtml).join('')}</div>`;
+    html += `
+      <div class="action-row">
+        <button class="action-btn primary" type="button" data-act="practice">🗨️ 이 단어로 대화 연습</button>
+        <button class="action-btn secondary" type="button" data-act="quiz-new">📝 오늘의 테스트${stats.todayTested ? ' (다시 보기)' : ''}</button>
+      </div>`;
+  } else {
+    html += '<div class="empty-note">🎉 단어 은행을 모두 학습했습니다!<br>아래 복습만 계속 진행해 주세요.</div>';
+  }
+  html += '</div>';
+
+  if (due.length) {
+    html += `
+      <div class="study-section">
+        <div class="study-section-head"><h3>오늘 복습할 단어</h3><span>${due.length}개 · +3일/+1주/+3주 일정</span></div>
+        <div class="word-grid">${due.map(wordCardHtml).join('')}</div>
+        <div class="action-row">
+          <button class="action-btn primary" type="button" data-act="quiz-review">✅ 복습 테스트 시작</button>
+        </div>
+      </div>`;
+  }
+
+  if (retry.length) {
+    html += `
+      <div class="study-section">
+        <div class="study-section-head"><h3>다시 풀기</h3><span>지난 테스트에서 틀린 단어 ${retry.length}개</span></div>
+        <div class="word-grid">${retry.map(wordCardHtml).join('')}</div>
+        <div class="action-row">
+          <button class="action-btn secondary" type="button" data-act="quiz-retry">🔁 다시 풀기 시작</button>
+        </div>
+      </div>`;
+  }
+
+  if (!due.length && !retry.length && !newWords.length) {
+    html += '<div class="empty-note">오늘은 예정된 복습이 없어요. 내일 다시 확인해 주세요!</div>';
+  }
+
+  el.studyContent.innerHTML = html;
+
+  el.studyContent.querySelectorAll('[data-speak]').forEach((btn) => {
+    btn.addEventListener('click', () => speak(btn.dataset.speak));
+  });
+  const act = (sel, fn) => el.studyContent.querySelector(sel)?.addEventListener('click', fn);
+  act('[data-act="practice"]', startPractice);
+  act('[data-act="quiz-new"]', () => openQuiz(newWords, 'new', '오늘의 테스트'));
+  act('[data-act="quiz-review"]', () => openQuiz(due, 'review', '복습 테스트'));
+  act('[data-act="quiz-retry"]', () => openQuiz(retry, 'retry', '다시 풀기'));
+
+  updateStudyBadge(stats);
+}
+
+function updateStudyBadge(stats) {
+  const s = stats || getStats();
+  const pending = (s.todayNewCount > 0 && !s.todayTested ? 1 : 0) + s.dueReviewCount + s.retryCount;
+  el.studyBadge.hidden = pending === 0;
+  el.studyBadge.textContent = pending > 99 ? '99+' : String(pending);
+}
+
+/* 대화 연습 모드 */
+
+function startPractice() {
+  const words = getTodayNewWords();
+  if (!words.length) return;
+  state.practiceMode = true;
+  state.practiceWords = words;
+  el.practiceBanner.hidden = false;
+  el.practiceBannerCount.textContent = words.length;
+  switchView('chat');
+  send('오늘 배운 단어로 대화 연습을 시작해 줘.');
+}
+
+function endPractice() {
+  state.practiceMode = false;
+  state.practiceWords = [];
+  el.practiceBanner.hidden = true;
+}
+
+/* 퀴즈 */
+
+let quizState = null;
+
+function openQuiz(words, mode, title) {
+  if (!words.length) return;
+  el.quizTitle.textContent = title;
+  quizState = { questions: buildQuiz(shuffleArr(words)), idx: 0, mode, correctCount: 0, results: [] };
+  el.quizBackdrop.hidden = false;
+  renderQuizQuestion();
+}
+
+function closeQuiz() {
+  el.quizBackdrop.hidden = true;
+  quizState = null;
+  if (!el.studyView.hidden) renderStudyView();
+  else updateStudyBadge();
+}
+
+function renderQuizQuestion() {
+  const { questions, idx } = quizState;
+  el.quizProgressBar.style.width = `${Math.round((idx / questions.length) * 100)}%`;
+
+  if (idx >= questions.length) { renderQuizResult(); return; }
+
+  const q = questions[idx];
+  el.quizBody.innerHTML = `
+    <div class="quiz-question">
+      <div class="q-jp">${esc(q.word.jp)}</div>
+      <div class="q-romaji">${esc(q.word.romaji)}</div>
+    </div>
+    <div class="quiz-options">
+      ${q.options.map((opt) => `<button class="quiz-opt" type="button">${esc(opt)}</button>`).join('')}
+    </div>`;
+
+  el.quizBody.querySelectorAll('.quiz-opt').forEach((btn) => {
+    btn.addEventListener('click', () => answerQuiz(btn, q));
+  });
+}
+
+function answerQuiz(btn, q) {
+  const correct = btn.textContent === q.correctAnswer;
+  quizState.results.push({ word: q.word, correct });
+  if (correct) quizState.correctCount += 1;
+  recordTestResult(q.word.id, correct, quizState.mode);
+
+  el.quizBody.querySelectorAll('.quiz-opt').forEach((b) => {
+    b.disabled = true;
+    if (b.textContent === q.correctAnswer) b.classList.add('correct');
+    else if (b === btn) b.classList.add('wrong');
+  });
+
+  speak(q.word.jp);
+
+  const next = document.createElement('button');
+  next.className = 'quiz-next';
+  next.type = 'button';
+  next.textContent = quizState.idx + 1 < quizState.questions.length ? '다음 문제' : '결과 보기';
+  next.addEventListener('click', () => { quizState.idx += 1; renderQuizQuestion(); });
+  el.quizBody.appendChild(next);
+}
+
+function renderQuizResult() {
+  const { correctCount, results, questions } = quizState;
+  el.quizProgressBar.style.width = '100%';
+  const wrong = results.filter((r) => !r.correct);
+
+  el.quizBody.innerHTML = `
+    <div class="quiz-result">
+      <div><div class="r-score">${correctCount} / ${questions.length}</div><div class="r-label">정답</div></div>
+      ${wrong.length ? `
+        <div class="quiz-result-list">
+          ${wrong.map((r) => `
+            <div class="rl-item wrong">
+              <span class="rl-mark">❌</span>
+              <span>${esc(r.word.jp)} <i>(${esc(r.word.romaji)})</i> — ${esc(r.word.ko)}</span>
+            </div>`).join('')}
+        </div>
+        <div class="r-label">틀린 단어는 '다시 풀기'에 자동으로 저장됩니다.</div>
+      ` : '<div class="r-label">전부 맞혔어요! 🎉</div>'}
+      <button class="quiz-next" type="button" id="btnQuizDone">확인</button>
+    </div>`;
+  document.getElementById('btnQuizDone').addEventListener('click', closeQuiz);
+}
+
+/* ── 14. 초기화 ────────────────────────────────────────────── */
+
+function bind() {
+  el.composer.addEventListener('submit', (e) => { e.preventDefault(); send(el.input.value); });
+
+  el.input.addEventListener('input', autoGrow);
+  el.input.addEventListener('keydown', (e) => {
+    // 데스크톱: Enter 전송 / Shift+Enter 줄바꿈. 모바일: Enter는 항상 줄바꿈.
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isTouch) {
+      e.preventDefault();
+      send(el.input.value);
+    }
+  });
+
+  el.btnMic.addEventListener('click', () => (state.recording ? stopRecording() : startRecording()));
+
+  el.btnSettings.addEventListener('click', openSettings);
+  el.btnClose.addEventListener('click', closeSettings);
+  el.btnSave.addEventListener('click', saveSettings);
+  el.backdrop.addEventListener('click', (e) => { if (e.target === el.backdrop) closeSettings(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!el.backdrop.hidden) closeSettings();
+    else if (!el.quizBackdrop.hidden) closeQuiz();
+  });
+
+  el.btnToggleKey.addEventListener('click', () => {
+    const show = el.apiKeyInput.type === 'password';
+    el.apiKeyInput.type = show ? 'text' : 'password';
+    el.btnToggleKey.textContent = show ? '숨기기' : '보기';
+  });
+
+  el.btnClearKey.addEventListener('click', async () => {
+    el.apiKeyInput.value = '';
+    state.apiKey = '';
+    await saveApiKey('');
+    localStorage.removeItem(LS.ek);
+    setStatus(null);
+    closeSettings();
+  });
+
+  el.modelSelect.addEventListener('change', updateModelHelp);
+  el.rateInput.addEventListener('input', () => {
+    el.rateOut.textContent = Number(el.rateInput.value).toFixed(2);
+  });
+
+  el.btnReset.addEventListener('click', resetChat);
+
+  el.btnAutoTts.addEventListener('click', () => {
+    state.autoTts = !state.autoTts;
+    el.btnAutoTts.setAttribute('aria-pressed', String(state.autoTts));
+    if (!state.autoTts) synth?.cancel();
+    persistSettings();
+  });
+
+  el.starters.addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (chip) send(chip.dataset.text);
+  });
+
+  // 첫 사용자 제스처에서 iOS TTS 잠금 해제
+  document.addEventListener('pointerdown', unlockTts, { once: true });
+
+  // 탭을 떠나면 재생 중단
+  document.addEventListener('visibilitychange', () => { if (document.hidden) synth?.cancel(); });
+
+  // 상단 탭 (대화 / 단어 학습)
+  el.tabChat.addEventListener('click', () => switchView('chat'));
+  el.tabStudy.addEventListener('click', () => switchView('study'));
+  el.btnEndPractice.addEventListener('click', endPractice);
+
+  // 퀴즈 모달
+  el.btnCloseQuiz.addEventListener('click', closeQuiz);
+  el.quizBackdrop.addEventListener('click', (e) => { if (e.target === el.quizBackdrop) closeQuiz(); });
+}
+
+async function main() {
+  // 모델 드롭다운
+  for (const [id, m] of Object.entries(MODELS)) {
+    el.modelSelect.add(new Option(m.label, id));
+  }
+
+  restore();
+  loadSrs();
+  state.apiKey = await loadApiKey();
+
+  el.btnAutoTts.setAttribute('aria-pressed', String(state.autoTts));
+
+  if (!state.turns.length) greet();
+  renderAll();
+  updateStudyBadge();
+
+  // 단어 은행이 바닥났으면 백그라운드에서 자동으로 새 단어를 생성한다.
+  // await하지 않음 — 초기 화면 표시를 API 호출로 지연시키지 않기 위함.
+  refillVocabIfNeeded().then((added) => {
+    if (!added) return;
+    updateStudyBadge();
+    if (!el.studyView.hidden) renderStudyView();
+  });
+
+  initSTT();
+  if (synth) {
+    pickVoice();
+    // 음성 목록은 비동기로 로드된다 — 로드되면 설정 패널의 표시도 갱신
+    synth.addEventListener('voiceschanged', () => {
+      pickVoice();
+      if (!el.backdrop.hidden) renderCaps();
+    });
+  }
+
+  bind();
+  setStatus(null);
+  autoGrow();
+
+  if (!state.apiKey) openSettings();
+}
+
+main();

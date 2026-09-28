@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#4f46e5">
+<meta name="description" content="Claude API 기반 1:1 일본어 회화 튜터">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>일본어 회화 튜터</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗾</text></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">日</span>
+      <div class="brand-text">
+        <h1>일본어 회화 튜터</h1>
+        <p id="statusLine">API 키를 등록해 주세요</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="btnAutoTts" class="icon-btn" type="button" aria-pressed="true" title="자동 음성 재생 켜기/끄기">
+        <span class="ico" aria-hidden="true">🔊</span>
+      </button>
+      <button id="btnReset" class="icon-btn" type="button" title="대화 초기화">
+        <span class="ico" aria-hidden="true">🗑️</span>
+      </button>
+      <button id="btnSettings" class="icon-btn" type="button" title="설정">
+        <span class="ico" aria-hidden="true">⚙️</span>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabbar" role="tablist">
+    <button id="tabChat" class="tab-btn" type="button" role="tab" aria-selected="true">💬 대화</button>
+    <button id="tabStudy" class="tab-btn" type="button" role="tab" aria-selected="false">
+      📚 단어 학습 <span id="studyBadge" class="badge" hidden>0</span>
+    </button>
+  </nav>
+
+  <div id="chatView" class="view">
+    <main id="chat" class="chat" aria-live="polite" aria-label="대화 내역"></main>
+
+    <div id="starters" class="starters" hidden>
+      <button class="chip" type="button" data-text="はじめまして。今日はよろしくお願いします。">はじめまして</button>
+      <button class="chip" type="button" data-text="週末は何をしましたか？">週末の話</button>
+      <button class="chip" type="button" data-text="日本の食べ物について話したいです。">食べ物</button>
+      <button class="chip" type="button" data-text="仕事について話しましょう。">仕事</button>
+      <button class="chip" type="button" data-text="旅行の計画を立てています。">旅行</button>
+    </div>
+
+    <div id="practiceBanner" class="practice-banner" hidden>
+      <span>📚 오늘의 단어 <b id="practiceBannerCount">0</b>개로 대화 연습 중</span>
+      <button id="btnEndPractice" type="button">종료</button>
+    </div>
+
+    <form id="composer" class="composer">
+      <button id="btnMic" class="mic-btn" type="button" title="음성 입력 (일본어)">
+        <span class="mic-pulse" aria-hidden="true"></span>
+        <span class="ico" aria-hidden="true">🎙️</span>
+      </button>
+      <textarea id="input" class="input" rows="1" placeholder="日本語で入力… (한국어로 질문해도 됩니다)"
+                autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+      <button id="btnSend" class="send-btn" type="submit" title="전송">
+        <span class="ico" aria-hidden="true">➤</span>
+      </button>
+    </form>
+  </div>
+
+  <div id="studyView" class="view" hidden>
+    <div id="studyContent" class="study"></div>
+  </div>
+
+</div>
+
+<!-- 퀴즈 모달 -->
+<div id="quizBackdrop" class="backdrop" hidden>
+  <div class="modal quiz-modal" role="dialog" aria-modal="true" aria-labelledby="quizTitle">
+    <div class="modal-head">
+      <h2 id="quizTitle">테스트</h2>
+      <button id="btnCloseQuiz" class="icon-btn" type="button" title="닫기"><span class="ico" aria-hidden="true">✕</span></button>
+    </div>
+    <div id="quizProgress" class="quiz-progress"><div id="quizProgressBar" class="quiz-progress-bar"></div></div>
+    <div id="quizBody" class="modal-body quiz-body"></div>
+  </div>
+</div>
+
+<!-- 설정 모달 -->
+<div id="settingsBackdrop" class="backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-head">
+      <h2 id="settingsTitle">설정</h2>
+      <button id="btnCloseSettings" class="icon-btn" type="button" title="닫기"><span class="ico" aria-hidden="true">✕</span></button>
+    </div>
+
+    <div class="modal-body">
+      <label class="field">
+        <span class="field-label">Anthropic API Key</span>
+        <div class="key-row">
+          <input id="apiKeyInput" class="text-input" type="password" placeholder="sk-ant-..."
+                 autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button id="btnToggleKey" class="ghost-btn" type="button">보기</button>
+        </div>
+        <span class="field-help">
+          브라우저에 <b>AES-GCM으로 암호화</b>되어 <code>localStorage</code>에 저장됩니다.
+          단, 이 기기에서 개발자도구를 열 수 있는 사람은 복호화가 가능합니다 —
+          공용 PC에서는 사용 후 <b>키 삭제</b>를 눌러 주세요.
+          <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">키 발급하기 ↗</a>
+        </span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">모델</span>
+        <select id="modelSelect" class="text-input"></select>
+        <span class="field-help" id="modelHelp"></span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">내 일본어 수준</span>
+        <select id="levelSelect" class="text-input">
+          <option value="beginner">초급 — 기초 문형 중심, 아주 쉬운 표현</option>
+          <option value="intermediate" selected>중급 — 일상 회화, 자연스러운 관용 표현</option>
+          <option value="advanced">고급 — 뉘앙스·경어·비즈니스 표현까지</option>
+        </select>
+      </label>
+
+      <div class="field">
+        <span class="field-label">음성 재생 속도 <output id="rateOut">0.95</output>×</span>
+        <input id="rateInput" class="range" type="range" min="0.6" max="1.3" step="0.05" value="0.95">
+      </div>
+
+      <div id="capabilities" class="caps"></div>
+    </div>
+
+    <div class="modal-foot">
+      <button id="btnClearKey" class="danger-btn" type="button">키 삭제</button>
+      <button id="btnSaveSettings" class="primary-btn" type="button">저장</button>
+    </div>
+  </div>
+</div>
+
+<script src="vocab.js"></script>
+<script src="srs.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

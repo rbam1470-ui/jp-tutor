@@ -1,0 +1,11 @@
+# OS
+Thumbs.db
+.DS_Store
+
+# 에디터
+.vscode/
+.idea/
+
+# 로컬 환경 파일 (API 키 등은 절대 커밋하지 말 것 — 이 앱은 브라우저 localStorage만 씀)
+.env
+.env.*
