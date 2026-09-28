@@ -625,6 +625,20 @@ function initSTT() {
 
   let finalText = '';
   let sttHadError = false;   // 'error'와 'end'가 같은 실패에 대해 알림을 중복으로 띄우지 않기 위한 플래그
+  let sttWatchdog = null;    // 크롬 내장 음성 인식은 구글 서버로 오디오를 보내 처리한다 — 광고 차단기/
+                             // 개인정보 보호 확장 프로그램이 그 통신을 막으면 result·error·end 중
+                             // 아무 이벤트도 없이 무한정 멈출 수 있어, 일정 시간 지나면 강제로 끊는다.
+  const STT_TIMEOUT_MS = 8000;
+
+  function sttGiveUp(message) {
+    clearTimeout(sttWatchdog);
+    sttHadError = true;
+    try { recog.abort(); } catch { /* noop */ }
+    state.recording = false;
+    el.btnMic.classList.remove('recording');
+    setStatus(null);
+    addTurn({ kind: 'notice', text: message, error: true });
+  }
 
   recog.addEventListener('start', () => {
     finalText = '';
@@ -632,9 +646,16 @@ function initSTT() {
     state.recording = true;
     el.btnMic.classList.add('recording');
     setStatus('🎙️ 듣는 중… 일본어로 말해 보세요');
+    clearTimeout(sttWatchdog);
+    sttWatchdog = setTimeout(() => {
+      sttGiveUp('음성 인식 서버로부터 응답이 없습니다. 크롬 내장 음성 인식은 구글 서버와 통신하는데, '
+        + '광고 차단기·개인정보 보호 확장 프로그램이나 방화벽/VPN이 이 통신을 막고 있을 수 있어요. '
+        + '해당 확장 프로그램을 잠시 꺼보시거나, 키보드로 입력해 주세요.');
+    }, STT_TIMEOUT_MS);
   });
 
   recog.addEventListener('result', (e) => {
+    clearTimeout(sttWatchdog);   // 결과가 오기 시작했으니 워치독은 해제 (아직 문장은 안 끝났을 수 있음)
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
@@ -646,6 +667,7 @@ function initSTT() {
   });
 
   recog.addEventListener('error', (e) => {
+    clearTimeout(sttWatchdog);
     if (e.error === 'aborted') return;   // 사용자가 버튼을 다시 눌러 직접 멈춘 경우 — 조용히 무시
     console.warn('[jt] 음성 인식 오류:', e.error);
     sttHadError = true;
@@ -672,6 +694,7 @@ function initSTT() {
   });
 
   recog.addEventListener('end', () => {
+    clearTimeout(sttWatchdog);
     state.recording = false;
     el.btnMic.classList.remove('recording');
     setStatus(null);
