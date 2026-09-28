@@ -178,6 +178,7 @@ const state = {
   recording: false,
   practiceMode: false,   // 오늘의 단어로 대화 연습 중인지
   practiceWords: [],     // 연습 중인 단어 목록 (vocab.js 항목)
+  practiceStartTurn: null, // 연습이 시작된 시점의 state.turns 길이 — 종료 시 이후 턴만 훑어 단어 사용 여부를 판단
 };
 
 const LS = { key: 'jt.key', ek: 'jt.ek', settings: 'jt.settings', chat: 'jt.chat' };
@@ -295,9 +296,29 @@ function addTurnNode(turn) {
   let node;
   if (turn.kind === 'user') node = userNode(turn);
   else if (turn.kind === 'bot') node = botNode(turn);
+  else if (turn.kind === 'summary') node = summaryNode(turn);
   else node = noticeNode(turn);
   el.chat.appendChild(node);
   return node;
+}
+
+/** 대화 연습 종료 시 뜨는 "오늘의 단어 정리" 카드 — 실제로 대화에 등장한 단어에 표시를 남긴다. */
+function summaryNode(turn) {
+  const row = document.createElement('div');
+  row.className = 'row bot';
+  const cards = turn.words.map((w) => `
+    <div class="word-card ${w.used ? 'used' : ''}">
+      <div class="w-cat">${w.used ? '✅ 오늘 사용함' : w.cat}</div>
+      <div class="w-jp">${esc(w.jp)}</div>
+      <div class="w-romaji">${esc(w.romaji)}</div>
+      <div class="w-ko">${esc(w.ko)}</div>
+    </div>`).join('');
+  const usedCount = turn.words.filter((w) => w.used).length;
+  row.innerHTML = `<div class="bubble">
+    <div class="c-title" style="color:var(--accent);margin-bottom:8px">📚 오늘의 단어 정리 · ${usedCount}/${turn.words.length}개 사용함</div>
+    <div class="word-grid">${cards}</div>
+  </div>`;
+  return row;
 }
 
 function userNode(turn) {
@@ -1136,15 +1157,42 @@ function startPractice() {
   if (!words.length) return;
   state.practiceMode = true;
   state.practiceWords = words;
+  state.practiceStartTurn = state.turns.length;
   el.practiceBanner.hidden = false;
   el.practiceBannerCount.textContent = words.length;
   switchView('chat');
   send('오늘 배운 단어로 대화 연습을 시작해 줘.');
 }
 
+/** 봇 턴 하나에 들어있는 일본어 텍스트를 전부 모아 하나의 문자열로 합친다 (단어 등장 여부 검사용). */
+function turnJpText(turn) {
+  if (turn.kind === 'user') return turn.text || '';
+  if (turn.kind !== 'bot') return '';
+  const d = turn.data || {};
+  return [d.corrected_jp, d.reply_jp, d.question_jp].filter(Boolean).join(' ');
+}
+
+/** 연습 세션 동안(practiceStartTurn 이후) 오늘의 단어가 실제로 대화에 등장했는지 정리한다. */
+function buildPracticeSummary() {
+  const sessionTurns = state.turns.slice(state.practiceStartTurn ?? 0);
+  const sessionText = sessionTurns.map(turnJpText).join(' ');
+  return state.practiceWords.map((w) => ({ ...w, used: sessionText.includes(w.jp) }));
+}
+
 function endPractice() {
+  const hadSession = state.practiceMode && state.practiceStartTurn !== null
+    && state.turns.length > state.practiceStartTurn;
+
+  if (hadSession) {
+    const summary = buildPracticeSummary();
+    if (summary.some((w) => w.used)) {
+      addTurn({ kind: 'summary', words: summary });
+    }
+  }
+
   state.practiceMode = false;
   state.practiceWords = [];
+  state.practiceStartTurn = null;
   el.practiceBanner.hidden = true;
 }
 

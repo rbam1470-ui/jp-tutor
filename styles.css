@@ -621,6 +621,11 @@ select.text-input { appearance: none; background-image: none; }
   display: flex; flex-direction: column; gap: 3px;
   position: relative;
 }
+.word-card.used {
+  background: color-mix(in srgb, var(--ok) 8%, var(--surface));
+  border-color: var(--ok);
+}
+.word-card.used .w-cat { color: var(--ok); }
 .word-card .w-cat {
   font-size: 10px; color: var(--accent); font-weight: 700; letter-spacing: .02em;
 }
