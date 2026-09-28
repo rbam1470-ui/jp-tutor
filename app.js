@@ -191,6 +191,9 @@ const el = {
   btnSave: $('btnSaveSettings'), btnClearKey: $('btnClearKey'),
   caps: $('capabilities'), starters: $('starters'),
 
+  syncStatus: $('syncStatus'), syncKeyInput: $('syncKeyInput'),
+  btnSyncConnect: $('btnSyncConnect'), btnSyncNew: $('btnSyncNew'), btnSyncCopy: $('btnSyncCopy'),
+
   tabChat: $('tabChat'), tabStudy: $('tabStudy'), studyBadge: $('studyBadge'),
   chatView: $('chatView'), studyView: $('studyView'), studyContent: $('studyContent'),
   practiceBanner: $('practiceBanner'), practiceBannerCount: $('practiceBannerCount'), btnEndPractice: $('btnEndPractice'),
@@ -664,6 +667,7 @@ function openSettings() {
   el.rateOut.textContent = Number(state.rate).toFixed(2);
   updateModelHelp();
   renderCaps();
+  renderSyncUi();
   el.backdrop.hidden = false;
 }
 
@@ -680,6 +684,64 @@ function renderCaps() {
       row(!!SR, `음성 인식 (STT): ${SR ? '사용 가능' : '이 브라우저는 미지원 — 키보드 입력을 사용하세요'}`)
     + row(!!synth, `음성 합성 (TTS): ${synth ? `사용 가능 · 일본어 음성 ${voices}개` : '미지원'}`)
     + row(hasSubtle, `키 암호화: ${hasSubtle ? 'AES-GCM' : 'base64 인코딩만 (HTTPS에서 열면 암호화됨)'}`);
+}
+
+/* 기기 간 동기화 UI */
+
+function fmtSyncTime(ts) {
+  if (!ts) return '아직 동기화 안 됨';
+  const diffSec = Math.round((Date.now() - ts) / 1000);
+  if (diffSec < 10) return '방금 전';
+  if (diffSec < 60) return `${diffSec}초 전`;
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}분 전`;
+  return new Date(ts).toLocaleString('ko-KR');
+}
+
+/** sync.js가 업로드/다운로드 성공·실패 시 호출한다 (설정 창이 열려 있을 때만 반영). */
+function renderSyncStatus(state_, ts) {
+  if (el.backdrop.hidden) return;
+  if (state_ === 'error') {
+    el.syncStatus.textContent = '동기화 실패 — 인터넷 연결을 확인해 주세요.';
+    return;
+  }
+  const key = getSyncKey();
+  el.syncStatus.textContent = key
+    ? `연결됨 · 마지막 동기화: ${fmtSyncTime(ts)}`
+    : '아직 다른 기기와 연결되지 않았습니다.';
+}
+
+function renderSyncUi() {
+  if (typeof syncEnabled !== 'function' || !syncEnabled()) {
+    el.syncStatus.textContent = 'Firebase 설정이 아직 안 되어 있어 이 기능은 꺼져 있습니다 (README 참고).';
+    el.syncKeyInput.disabled = true;
+    el.btnSyncConnect.disabled = true;
+    el.btnSyncNew.disabled = true;
+    return;
+  }
+  const key = getSyncKey();
+  el.syncKeyInput.value = key;
+  el.btnSyncCopy.hidden = !key;
+  renderSyncStatus('ok', Number(localStorage.getItem('jt.syncSeenAt') || 0));
+}
+
+async function handleSyncNew() {
+  if (getSyncKey() && !confirm('이미 연결된 코드가 있습니다. 새 코드를 만들면 이 기기가 새로운 동기화 그룹의 기준이 됩니다. 계속할까요?')) return;
+  generateSyncKey();
+  el.syncStatus.textContent = '업로드 중…';
+  await pushSyncNow();
+  renderSyncUi();
+}
+
+async function handleSyncConnect() {
+  const key = el.syncKeyInput.value.trim();
+  if (!key) return;
+  if (getStats().totalLearned > 0
+    && !confirm('연결하면 이 기기의 기존 학습 진행 기록이 다른 기기의 기록으로 덮어써질 수 있습니다. 계속할까요?')) return;
+
+  setSyncKey(key);
+  el.syncStatus.textContent = '불러오는 중…';
+  await pullSyncOnStart();
+  location.reload(); // 새로 받아온 진행 기록으로 화면 전체를 다시 그린다
 }
 
 async function saveSettings() {
@@ -701,6 +763,7 @@ function persistSettings() {
   localStorage.setItem(LS.settings, JSON.stringify({
     model: state.model, level: state.level, rate: state.rate, autoTts: state.autoTts,
   }));
+  if (typeof scheduleSyncPush === 'function') scheduleSyncPush();
 }
 
 function persistChat() {
@@ -1024,6 +1087,14 @@ function bind() {
     closeSettings();
   });
 
+  el.btnSyncNew.addEventListener('click', handleSyncNew);
+  el.btnSyncConnect.addEventListener('click', handleSyncConnect);
+  el.btnSyncCopy.addEventListener('click', () => {
+    navigator.clipboard?.writeText(getSyncKey());
+    el.btnSyncCopy.textContent = '복사됨';
+    setTimeout(() => { el.btnSyncCopy.textContent = '코드 복사'; }, 1200);
+  });
+
   el.modelSelect.addEventListener('change', updateModelHelp);
   el.rateInput.addEventListener('input', () => {
     el.rateOut.textContent = Number(el.rateInput.value).toFixed(2);
@@ -1066,7 +1137,7 @@ async function main() {
   }
 
   restore();
-  loadSrs();
+  await loadSrs();
   state.apiKey = await loadApiKey();
 
   el.btnAutoTts.setAttribute('aria-pressed', String(state.autoTts));

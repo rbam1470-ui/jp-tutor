@@ -9,6 +9,7 @@ jp-tutor/
 ├── styles.css    모바일 퍼스트 메신저 UI (라이트/다크 자동)
 ├── vocab.js      내장 단어 은행 (N5~N4 수준 240개, 하루 10개 × 24일)
 ├── srs.js        간격 반복 학습(SRS) 엔진 — 순수 로직 + localStorage
+├── sync.js       기기 간 동기화 (Firebase Firestore, 선택 기능)
 ├── app.js        Claude API 호출 · STT · TTS · 암호화 저장 · 학습 UI
 └── README.md
 ```
@@ -132,6 +133,65 @@ anthropic-dangerous-direct-browser-access: true   ← 브라우저 직접 호출
   (스케줄 자체는 틀려도 늦춰지지 않는 고정 트랙입니다).
 - 학습 기록은 `localStorage`(`jt.srs`)에 저장됩니다. 단어 은행은 API 호출 없이 앱에 내장되어
   있어 오프라인에서도 단어 목록·퀴즈는 동작합니다(대화 연습만 API가 필요).
+
+## 기기 간 동기화 (PC ↔ 폰, 선택 기능)
+
+기본 상태에서는 모든 데이터가 브라우저별로 로컬(localStorage)에만 저장되어, PC와 폰이
+서로 다른 진행 기록을 가집니다. 무료 [Firebase](https://firebase.google.com) Firestore를
+연결하면 **단어 학습 진행 기록**(오늘의 단어, 복습 스케줄, 자동 생성된 단어, 설정)이
+기기 간에 자동으로 동기화됩니다.
+
+**동기화되지 않는 것**: API 키(`jt.key`), 대화 내역(`jt.chat`) — 각 기기에 남습니다.
+API 키는 보안상 의도적으로 동기화 대상에서 뺐습니다 (제3자 서비스에 API 키가 오가지
+않도록). 대화 내역은 용량이 계속 커질 수 있어 뺐습니다.
+
+### 설정 방법 (최초 1회, 5분)
+
+1. [Firebase 콘솔](https://console.firebase.google.com)에서 구글 계정으로 로그인 →
+   **프로젝트 추가** → 이름은 아무거나 (예: `jp-tutor-sync`) → Google Analytics는 꺼도 됨.
+2. 왼쪽 메뉴 **빌드 → Firestore Database** → **데이터베이스 만들기** → 위치는 가까운 곳
+   (예: `asia-northeast3`) → **테스트 모드로 시작** (규칙은 3번에서 교체).
+3. **Firestore → 규칙(Rules)** 탭에서 아래로 교체하고 **게시**:
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /syncData/{syncKey} {
+         allow read, write: if true;
+       }
+     }
+   }
+   ```
+   > 로그인 시스템이 없는 만큼, 동기화 코드 자체가 사실상의 비밀번호입니다. 코드를 아는
+   > 사람은 그 문서 하나만 읽고 쓸 수 있습니다 (다른 사용자 데이터는 접근 불가). 학습
+   > 진행 기록일 뿐 API 키 등 민감정보는 여기 올라가지 않으니, 개인용으로는 충분합니다.
+4. 왼쪽 위 톱니바퀴 → **프로젝트 설정** → 아래 **내 앱** → `</>` (웹 앱 아이콘) →
+   앱 닉네임 아무거나 입력 → **앱 등록** (Firebase Hosting 체크 불필요).
+5. 화면에 나오는 `firebaseConfig` 객체를 통째로 복사해 `sync.js`의 `FIREBASE_CONFIG`에
+   붙여넣기:
+   ```js
+   const FIREBASE_CONFIG = {
+     apiKey: "AIza...",
+     authDomain: "jp-tutor-sync.firebaseapp.com",
+     projectId: "jp-tutor-sync",
+     storageBucket: "jp-tutor-sync.appspot.com",
+     messagingSenderId: "...",
+     appId: "...",
+   };
+   ```
+   (이 값들은 비밀정보가 아닙니다 — 실제 접근 제어는 3번의 Firestore 규칙이 담당합니다.)
+6. 커밋 후 배포(`git add -A && git commit -m "Firebase 설정" && git push`).
+
+### 사용 방법
+
+- **첫 번째 기기(PC)**: 설정 ⚙️ → "기기 간 동기화" → **이 기기를 기준으로 새 코드 만들기**
+  → 32자리 코드 생성됨 → **코드 복사**.
+- **두 번째 기기(폰)**: 같은 사이트 접속 → 설정 → 코드 붙여넣기 → **연결**.
+  (이미 폰에서 며칠 학습한 기록이 있다면, 연결 시 PC 기록으로 덮어써진다는 확인창이 뜹니다.)
+- 이후로는 두 기기 모두 학습 진행 기록이 바뀔 때마다(퀴즈 채점, 새 단어 배정 등) 자동으로
+  업로드되고, 앱을 열 때마다 더 최신 데이터를 자동으로 받아옵니다.
+- 충돌 처리는 "마지막에 저장한 쪽이 이긴다" 방식입니다 — 두 기기를 동시에 쓰지 않고
+  번갈아 쓰는 사용 패턴을 가정합니다.
 
 ## 기타
 

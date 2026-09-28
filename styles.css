@@ -46,6 +46,10 @@
 
 * { box-sizing: border-box; }
 
+/* author 규칙(.action-btn 등)이 display:flex를 지정하면 [hidden]의 UA 기본값(display:none)을
+   specificity 동률로 덮어써 버리는 경우가 있어, 전역으로 확실히 강제한다. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -186,7 +190,6 @@ body {
   font-size: 12.5px;
   font-weight: 600;
 }
-.practice-banner[hidden] { display: none; }
 .practice-banner button {
   border: 1px solid var(--accent);
   background: transparent;
@@ -345,8 +348,6 @@ body {
   padding: 4px 14px 8px;
   scrollbar-width: none;
 }
-/* [hidden]의 UA 스타일은 .starters의 display:flex에 밀리므로 명시적으로 덮어쓴다 */
-.starters[hidden] { display: none; }
 .starters::-webkit-scrollbar { display: none; }
 .chip {
   flex: none;

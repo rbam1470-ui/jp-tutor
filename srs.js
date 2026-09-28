@@ -56,6 +56,7 @@ function saveVocabExt() {
   } catch (e) {
     console.warn('[jt] 확장 단어 저장 실패', e);
   }
+  if (typeof scheduleSyncPush === 'function') scheduleSyncPush();
 }
 
 function allWords() {
@@ -94,13 +95,37 @@ function blankSrs() {
 
 let srs = blankSrs();
 
-/** 동기 복원 — localStorage에서 SRS 상태와 확장 단어를 읽어 오늘의 세트를 확정한다. */
-function loadSrs() {
+function readSrsFromLocalStorage() {
   try {
     const raw = JSON.parse(localStorage.getItem(SRS_KEY) || 'null');
     if (raw && typeof raw === 'object') srs = { ...blankSrs(), ...raw, progress: raw.progress || {} };
   } catch { /* 기본값 유지 */ }
+}
+
+/**
+ * 상태 복원 — localStorage에서 SRS 상태와 확장 단어를 읽고, 동기화가 설정되어 있으면
+ * 클라우드에 더 최신 데이터가 있는지 먼저 확인한 뒤(최대 4초 대기) 오늘의 세트를 확정한다.
+ * 동기화가 없거나 느려도 로컬 데이터만으로 정상 진행된다.
+ */
+async function loadSrs() {
+  readSrsFromLocalStorage();
   loadVocabExt();
+
+  if (typeof pullSyncOnStart === 'function') {
+    try {
+      const updated = await Promise.race([
+        pullSyncOnStart(),
+        new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
+      ]);
+      if (updated) {
+        readSrsFromLocalStorage(); // pullSyncOnStart가 localStorage를 갱신했으니 다시 읽는다
+        loadVocabExt();
+      }
+    } catch (e) {
+      console.warn('[jt] 동기화 확인 실패 — 로컬 데이터로 진행합니다.', e);
+    }
+  }
+
   ensureTodaySet();
 }
 
@@ -110,6 +135,7 @@ function saveSrs() {
   } catch (e) {
     console.warn('[jt] 학습 기록 저장 실패', e);
   }
+  if (typeof scheduleSyncPush === 'function') scheduleSyncPush();
 }
 
 /**
