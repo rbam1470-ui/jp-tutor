@@ -11,23 +11,25 @@ const API_VERSION = '2023-06-01';
 /**
  * 모델별 지원 파라미터.
  *   effort   : output_config.effort — Haiku 4.5는 미지원이므로 null (보내면 400).
- *   thinking : 매 턴마다 문장을 글자 단위 조각(jp/romaji/ko)으로 정확히 나누고 원문과
- *              한 글자도 틀림없이 이어붙여야 하는 까다로운 작업이라, thinking을 꺼두면
- *              (특히 Sonnet 5) 조각 배열을 통째로 비우거나 글자를 빠뜨리는 경우가 실측
- *              확인됐다. 그래서 thinking은 끄지 않고 기본(adaptive)으로 둔다 — 문장이
- *              짧으면 사고 토큰도 몇 개 안 써서 비용/지연 영향은 작다. effort:low로
- *              전체적인 사고 깊이는 낮게 유지해 균형을 맞춘다.
+ *   thinking : 매 턴마다 문장을 단어→글자(mora) 2단 구조로 정확히 나누고 원문과 한 글자도
+ *              틀림없이 이어붙여야 하는 까다로운 작업이라, thinking을 꺼두면(특히 Sonnet 5)
+ *              조각 배열을 통째로 비우거나 글자를 빠뜨리는 경우가 실측 확인됐다. thinking은
+ *              끄지 않고 기본(adaptive)으로 둔다 — 문장이 짧으면 사고 토큰도 몇 개 안 써서
+ *              비용/지연 영향은 작다. effort는 low에서 medium으로 올렸다 — low에서는 이
+ *              2단 중첩 스키마 작업 자체를 가끔 통째로 건너뛰는(빈 배열만 반환) 경우가
+ *              실측됐기 때문. (렌더링 쪽에도 안전장치가 있어 그래도 드물게 실패하면
+ *              해당 메시지만 로마자 없는 평문으로 조용히 대체된다 — 화면이 깨지진 않음.)
  */
 const MODELS = {
   'claude-sonnet-5': {
     label: 'Claude Sonnet 5 — 균형 (권장)',
     help: '속도·품질·비용의 균형. 회화 연습에 가장 적합합니다. ($2 / $10 per MTok)',
-    effort: 'low', thinking: null,
+    effort: 'medium', thinking: null,
   },
   'claude-opus-5': {
     label: 'Claude Opus 5 — 최고 품질',
     help: '교정 설명이 가장 정확하고 섬세합니다. 조금 느리고 비쌉니다. ($5 / $25 per MTok)',
-    effort: 'low', thinking: null,
+    effort: 'medium', thinking: null,
   },
   'claude-haiku-4-5': {
     label: 'Claude Haiku 4.5 — 가장 빠름',
@@ -44,9 +46,12 @@ const LEVELS = {
 };
 
 /**
- * 문장 하나를 단어/구 단위로 나눈 조각 배열의 스키마.
- * 각 조각의 jp를 순서대로 이어붙이면 원문 문장과 완전히 같아야 한다 — 이렇게 해야
- * 화면에서 "일본어 조각 바로 아래에 그 조각의 로마자·한국어 뜻"을 후리가나처럼 배치할 수 있다.
+ * 문장 하나를 글자(모라) 단위로 나눈 평평한(flat) 조각 배열의 스키마.
+ * 각 조각의 jp를 순서대로 이어붙이면 원문 문장과 완전히 같아야 한다.
+ * ko(한국어 뜻)는 단어/조사가 시작하는 조각에만 채우고 나머지는 비워둔다 — 단어 단위로
+ * "묶어서 보여주는" 작업은 모델에게 시키지 않고 렌더링 쪽(renderRuby)에서 처리한다.
+ * (한 번 2단 중첩 배열로 만들어봤더니 모델이 종종 배열 전체를 비워버려 신뢰도가 떨어졌음 —
+ * 평평한 구조가 훨씬 안정적으로 채워져서 이 방식으로 되돌렸다.)
  */
 function chunksSchema(desc) {
   return {
@@ -57,7 +62,7 @@ function chunksSchema(desc) {
       properties: {
         jp:     { type: 'string', description: '이 조각의 일본어 원문 (한자/가나/구두점/공백 그대로)' },
         romaji: { type: 'string', description: '이 조각의 로마자 발음. 구두점·공백처럼 발음이 없으면 빈 문자열' },
-        ko:     { type: 'string', description: '단어/조사가 시작하는 첫 조각에만 그 단어의 한국어 뜻(조사는 문법 기능, 예: は→"~은/는"). 같은 단어의 나머지 글자 조각과 구두점·공백은 빈 문자열' },
+        ko:     { type: 'string', description: '단어/조사가 시작하는 조각에만 그 단어 전체의 한국어 뜻(조사는 문법 기능). 같은 단어의 나머지 글자 조각과 구두점은 빈 문자열' },
       },
       required: ['jp', 'romaji', 'ko'],
       additionalProperties: false,
@@ -112,15 +117,15 @@ function systemPrompt() {
     '학습자가 일본어 문장을 이해하는 유일한 수단이므로, 모든 *_chunks 배열을 절대 비우지 말 것.',
     '로마자는 수정 헵번식으로 쓰고 장음은 겹모음으로 적을 것 (예: きょう→kyou, がっこう→gakkou, ラーメン→raamen).',
     '',
-    '*_chunks 배열 공통 규칙 (화면에서 진짜 후리가나처럼 일본어 글자 하나하나 바로 아래에 그 글자의',
-    '발음을 보여주는 데 씀 — 단어 단위가 아니라 최대한 잘게, 글자 단위로 나눌 것):',
+    '*_chunks 배열 공통 규칙 (글자 하나하나 밑에 발음을 보여주는 후리가나 스타일 —',
+    '단어 단위가 아니라 최대한 잘게, 글자 단위로 나눌 것):',
     '- 원칙: 한자 한 글자 = 한 조각, 히라가나·가타카나 한 글자 = 한 조각. 절대 단어 전체를 통째로',
-    '  한 조각으로 묶지 말 것 (예: 日本語는 日/本/語 세 조각으로, 今日は는 今日/は로).',
+    '  한 조각으로 묶지 말 것 (예: 日本語는 日/本/語 세 조각으로).',
     '- 예외 1 (요음) — 작은 ゃゅょ(きゃ·しゅ·ちょ 등)는 분리하면 발음이 깨지므로 바로 앞 글자와',
     '  합쳐 한 조각으로. 예: 「きゃ」→ 한 조각, romaji "kya".',
     '- 예외 2 (촉음) — 작은 っ은 그 자체로 소리가 없고 뒤 글자의 자음을 겹치게 하므로, 바로 뒤',
     '  글자와 합쳐 한 조각으로 하고 그 자음을 겹쳐 적을 것. 예: がっこう → が(ga) / っこ(kko) / う(u).',
-    '- 예외 3 (장음) — 가타카나의 장음 부호 ー나, 앞 글자의 모음을 그대로 늘이는 글자는 바로 앞',
+    '- 예외 3 (장음) — 가타카나 장음 부호 ー나 앞 글자의 모음을 그대로 늘이는 글자는 바로 앞',
     '  글자와 합쳐 모음을 늘여 적을 것. 예: ラーメン → ラー(raa) / メ(me) / ン(n).',
     '- 예외 4 (숙자훈) — 今日(kyou)·一日(ichinichi)처럼 한자별로 쪼개면 의미가 깨지는 고유 읽기',
     '  단어만 예외적으로 단어 전체를 한 조각으로 묶을 것. 흔치 않은 경우에만 적용.',
@@ -129,10 +134,10 @@ function systemPrompt() {
     '  반드시 빈 문자열 ""로 — "。"를 "."처럼 로마자 기호로 옮기지 말 것.',
     '- 조사(は·が·を·に 등)도 각각 독립된 한 조각이며 반드시 romaji를 채울 것.',
     '- ko(그 조각의 한국어 뜻)는 "단어·조사 단위"로 그 단어가 시작하는 첫 조각에만 채우고,',
-    '  같은 단어의 나머지 글자 조각들은 ko를 빈 문자열로 둘 것 (뜻이 단어 시작 위치에 한 번만',
-    '  나타나도록). 조사는 한 글자짜리 조각 하나뿐이므로 그 조각에 문법 기능을 짧게 적을 것',
-    '  (예: は→"~은/는", を→"~을/를", に→"~에", が→"~이/가"). 예: 日本語 → 日(ni, ko:"일본어") /',
-    '  本(hon, ko:"") / 語(go, ko:""). どんな → ど(do, ko:"어떤") / ん(n, ko:"") / な(na, ko:"").',
+    '  같은 단어의 나머지 글자 조각들은 ko를 빈 문자열로 둘 것 — 화면에서 그 뜻이 이 조각부터',
+    '  다음 뜻이 있는 조각 전까지를 자동으로 한 단어로 묶어서 보여준다. 조사는 한 글자짜리',
+    '  조각 하나뿐이므로 그 조각에 문법 기능을 짧게 적을 것 (예: は→"~은/는", を→"~을/를",',
+    '  に→"~에", が→"~이/가"). 예: 日本語 → 日(ni, ko:"일본어") / 本(hon, ko:"") / 語(go, ko:"").',
     '',
     '매 턴마다 지정된 JSON 스키마로만 응답하십시오. 각 필드 규칙:',
     '1. correction_needed — 사용자의 직전 발화에 문법·조사·어휘 선택·경어·부자연스러운 어순 문제가 있으면 true.',
@@ -311,31 +316,48 @@ function updateUserRuby(rowEl, turn) {
   persistChat();   // 로마자가 채워진 상태로 저장해서 새로고침해도 유지되게 한다.
 }
 
-/**
- * 일본어 문장을 후리가나 스타일로 렌더링한다 — 조각(chunk)마다 그 조각의 로마자를
- * 바로 아래에 붙인다. chunks가 없거나 원문과 이어붙인 결과가 다르면(모델이 규칙을
- * 어긴 경우) 안전하게 원문 전체 텍스트만 보여준다.
- */
-// 구두점/공백/기호만으로 된 조각은 모델이 로마자를 채워 보내도 무시한다 (예: 。→"." 같은 습관 방지).
+// 구두점/공백/기호만으로 된 mora는 모델이 로마자를 채워 보내도 무시한다 (예: 。→"." 같은 습관 방지).
 const RUBY_PUNCT_RE = /^[\s。、！？「」『』・…—―ー～〜.,!?"'()（）\[\]{}:;：；\-–]+$/;
 
+/** mora 하나(글자 단위) — jp 위에 로마자를 붙인 작은 세로 박스. 구두점/발음 없음이면 평문. */
+function renderMora(m) {
+  const jp = esc(m?.jp ?? '');
+  const isPunct = RUBY_PUNCT_RE.test(m?.jp ?? '');
+  const rj = isPunct ? '' : (m?.romaji || '').trim();
+  if (!rj) return `<span class="ruby-plain">${jp}</span>`;
+  return `<span class="ruby-chunk"><span class="ruby-jp">${jp}</span><span class="ruby-romaji">${esc(rj)}</span></span>`;
+}
+
+/**
+ * 평평한(flat) 글자 조각 배열을 후리가나 스타일로 렌더링한다 — 글자(mora) 하나하나
+ * 밑에 그 발음을 붙인다. ko(뜻)가 채워진 조각을 "새 단어의 시작"으로 보고, 다음에
+ * ko가 채워진 조각(또는 구두점, 또는 끝)이 나올 때까지의 조각들을 하나의 시각적
+ * 단어 묶음으로 그룹핑해서, 그 뜻을 단어 묶음 전체 밑에 한 번만 배치한다 — 이 그룹핑은
+ * 모델이 아니라 여기(클라이언트)에서 하므로 API가 중첩 구조를 정확히 채워야 하는
+ * 부담이 없다. chunks가 없거나 원문과 이어붙인 결과가 다르면(모델이 규칙을 어긴 경우)
+ * 안전하게 원문 전체 텍스트만 보여준다.
+ */
 function renderRuby(jpText, chunks) {
   const valid = Array.isArray(chunks) && chunks.length > 0
     && chunks.map((c) => c?.jp ?? '').join('') === jpText;
 
   if (!valid) return esc(jpText);
 
-  return chunks.map((c) => {
-    const jp = esc(c.jp);
+  // 1) 단어 묶음으로 그룹핑: 구두점은 항상 단독 묶음, ko가 채워진 조각은 새 묶음 시작.
+  const groups = [];
+  for (const c of chunks) {
     const isPunct = RUBY_PUNCT_RE.test(c.jp);
-    const rj = isPunct ? '' : (c.romaji || '').trim();
     const ko = isPunct ? '' : (c.ko || '').trim();
-    if (!rj && !ko) return `<span class="ruby-plain">${jp}</span>`;
-    return `<span class="ruby-chunk">`
-      + `<span class="ruby-jp">${jp}</span>`
-      + (rj ? `<span class="ruby-romaji">${esc(rj)}</span>` : '')
-      + (ko ? `<span class="ruby-ko">${esc(ko)}</span>` : '')
-      + `</span>`;
+    const startsNewGroup = isPunct || ko || groups.length === 0;
+    if (startsNewGroup) groups.push({ ko, mora: [c] });
+    else groups[groups.length - 1].mora.push(c);
+  }
+
+  // 2) 각 묶음을 렌더링: 글자별 발음 행 + (있으면) 묶음 전체의 뜻 한 줄.
+  return groups.map((g) => {
+    const moraHtml = g.mora.map(renderMora).join('');
+    const koHtml = g.ko ? `<span class="ruby-ko">${esc(g.ko)}</span>` : '';
+    return `<span class="ruby-word"><span class="ruby-mora-row">${moraHtml}</span>${koHtml}</span>`;
   }).join('');
 }
 
@@ -429,7 +451,10 @@ function applyModelParams(body) {
 function buildBody() {
   return applyModelParams({
     model: state.model,
-    max_tokens: 1600,
+    // 예전엔 1600이었는데, 글자 단위 chunks(각 필드마다 jp/romaji/ko 배열)가 응답을
+    // 훨씬 길게 만들면서 너무 빠듯해졌다 — thinking이 토큰을 많이 쓰면 실제 응답 쓸
+    // 자리가 없어서 통째로 잘리는 경우까지 실측 확인되어 넉넉하게 올렸다.
+    max_tokens: 8000,
     system: systemPrompt(),
     messages: state.history.slice(-MAX_HISTORY),
     output_config: { format: { type: 'json_schema', schema: SCHEMA } },
