@@ -26,12 +26,12 @@ const SYNC_DEBOUNCE_MS = 1500;
  * apiKey 등은 비밀정보가 아니다 — 실제 접근 제어는 Firestore 보안 규칙이 담당한다.
  */
 const FIREBASE_CONFIG = {
-  apiKey: '',
-  authDomain: '',
-  projectId: '',
-  storageBucket: '',
-  messagingSenderId: '',
-  appId: '',
+  apiKey: 'AIzaSyA4kIW7GNKP1sb6aW_JqS-l7eCKnFnjsKQ',
+  authDomain: 'jp-tutor-sync.firebaseapp.com',
+  projectId: 'jp-tutor-sync',
+  storageBucket: 'jp-tutor-sync.firebasestorage.app',
+  messagingSenderId: '894291517724',
+  appId: '1:894291517724:web:6328a85da617f8ce5c9ad9',
 };
 
 let fbApp = null;
