@@ -40,25 +40,46 @@ const LEVELS = {
   advanced:     '고급 (JLPT N1). 뉘앙스 차이, 경어(敬語), 비즈니스/격식 표현의 미묘한 차이까지 지적할 것.',
 };
 
+/**
+ * 문장 하나를 단어/구 단위로 나눈 조각 배열의 스키마.
+ * 각 조각의 jp를 순서대로 이어붙이면 원문 문장과 완전히 같아야 한다 — 이렇게 해야
+ * 화면에서 "일본어 조각 바로 아래에 그 조각의 로마자"를 후리가나처럼 배치할 수 있다.
+ */
+function chunksSchema(desc) {
+  return {
+    type: 'array',
+    description: desc,
+    items: {
+      type: 'object',
+      properties: {
+        jp:     { type: 'string', description: '이 조각의 일본어 원문 (한자/가나/구두점/공백 그대로)' },
+        romaji: { type: 'string', description: '이 조각의 로마자 발음. 구두점·공백처럼 발음이 없으면 빈 문자열' },
+      },
+      required: ['jp', 'romaji'],
+      additionalProperties: false,
+    },
+  };
+}
+
 /** 응답 스키마 — output_config.format 으로 JSON 구조를 강제한다. */
 const SCHEMA = {
   type: 'object',
   properties: {
     correction_needed: { type: 'boolean', description: '사용자의 직전 일본어 발화에 고칠 점이 있으면 true' },
     corrected_jp:      { type: 'string',  description: '교정된 전체 일본어 문장. 고칠 점이 없으면 빈 문자열' },
-    corrected_romaji:  { type: 'string',  description: 'corrected_jp 전체를 로마자(헵번식)로 표기한 발음. corrected_jp가 빈 문자열이면 빈 문자열' },
+    corrected_chunks:  chunksSchema('corrected_jp를 단어/구 단위로 나눈 배열. corrected_jp가 빈 문자열이면 빈 배열'),
     feedback_ko:       { type: 'string',  description: '무엇이 왜 어색한지 한국어 설명. 없으면 빈 문자열' },
     reply_jp:          { type: 'string',  description: '튜터의 자연스러운 일본어 응답 (1~2문장)' },
-    reply_romaji:      { type: 'string',  description: 'reply_jp 전체를 로마자(헵번식)로 표기한 발음' },
+    reply_chunks:      chunksSchema('reply_jp를 단어/구 단위로 나눈 배열. 비우지 말 것'),
     reply_ko:          { type: 'string',  description: 'reply_jp 의 한국어 번역' },
     question_jp:       { type: 'string',  description: '대화를 이어가기 위한 추가 질문 1개 (일본어)' },
-    question_romaji:   { type: 'string',  description: 'question_jp 전체를 로마자(헵번식)로 표기한 발음' },
+    question_chunks:   chunksSchema('question_jp를 단어/구 단위로 나눈 배열. 비우지 말 것'),
     question_ko:       { type: 'string',  description: 'question_jp 의 한국어 번역' },
   },
   required: [
-    'correction_needed', 'corrected_jp', 'corrected_romaji', 'feedback_ko',
-    'reply_jp', 'reply_romaji', 'reply_ko',
-    'question_jp', 'question_romaji', 'question_ko',
+    'correction_needed', 'corrected_jp', 'corrected_chunks', 'feedback_ko',
+    'reply_jp', 'reply_chunks', 'reply_ko',
+    'question_jp', 'question_chunks', 'question_ko',
   ],
   additionalProperties: false,
 };
@@ -83,23 +104,29 @@ function systemPrompt() {
     `학습자 수준: ${LEVELS[state.level] || LEVELS.intermediate}`,
     '',
     '중요: 학습자는 히라가나·가타카나를 전혀 읽지 못합니다. 로마자(알파벳) 발음 표기가',
-    '학습자가 일본어 문장을 이해하는 유일한 수단이므로, 모든 로마자 필드를 절대 비우지 말 것.',
+    '학습자가 일본어 문장을 이해하는 유일한 수단이므로, 모든 *_chunks 배열을 절대 비우지 말 것.',
     '로마자는 수정 헵번식으로 쓰고 장음은 겹모음으로 적을 것 (예: きょう→kyou, がっこう→gakkou, ラーメン→raamen).',
+    '',
+    '*_chunks 배열 공통 규칙 (화면에서 후리가나처럼 각 조각 바로 아래에 그 조각의 로마자를 보여주는 데 씀):',
+    '- 자연스러운 단어/구 단위로 나눌 것 (예: 今日/は/どんな/一日/でした/か). 조사(は·が·を·に 등)는 그 자체로',
+    '  한 조각, 활용형 동사·형용사는 어간+어미를 붙여서 한 조각으로 — 발음이 자연스럽게 끊기는 단위로.',
+    '- 조각들의 jp를 순서대로 그대로 이어 붙이면 원문 문장과 한 글자도 틀림없이 같아야 한다',
+    '  (구두점·공백·기호도 빠짐없이 각자 조각으로 포함, 그런 조각의 romaji는 빈 문자열 "").',
+    '- 한자 없이 히라가나/가타카나로만 된 조각도 반드시 romaji를 채울 것.',
     '',
     '매 턴마다 지정된 JSON 스키마로만 응답하십시오. 각 필드 규칙:',
     '1. correction_needed — 사용자의 직전 발화에 문법·조사·어휘 선택·경어·부자연스러운 어순 문제가 있으면 true.',
     '   사용자가 한국어로 질문했거나, 발화가 이미 자연스러우면 false.',
     '2. corrected_jp — 원래 의도를 살린 자연스러운 일본어 전체 문장. correction_needed가 false면 빈 문자열.',
-    '3. corrected_romaji — corrected_jp의 로마자 발음. corrected_jp가 빈 문자열이면 빈 문자열.',
+    '3. corrected_chunks — corrected_jp를 위 규칙대로 나눈 배열. corrected_jp가 빈 문자열이면 빈 배열 [].',
     '4. feedback_ko — 무엇이 왜 어색했는지 한국어로 1~3문장. 규칙을 짧고 구체적으로. false면 빈 문자열.',
     '   일본어 단어를 언급할 때 괄호로 로마자를 끼워 넣지 말 것 (예: "「見ました」는 잘못된 표현이에요" ○,',
-    '   "「見ました(mimashita)」는 잘못된 표현이에요" ×) — 로마자는 이미 corrected_romaji 필드에 따로 있으므로',
-    '   본문에 섞으면 좁은 화면에서 줄바꿈되어 지저분해 보인다. 순수 한국어 문장으로만 쓸 것.',
+    '   "「見ました(mimashita)」는 잘못된 표현이에요" ×) — 순수 한국어 문장으로만 쓸 것.',
     '5. reply_jp — 튜터로서 대화를 이어가는 자연스러운 일본어 응답 1~2문장. 학습자 수준에 맞춘 어휘를 쓸 것.',
-    '6. reply_romaji — reply_jp 전체의 로마자 발음. 비워두지 말 것.',
+    '6. reply_chunks — reply_jp를 위 규칙대로 나눈 배열. 비워두지 말 것.',
     '7. reply_ko — reply_jp의 한국어 번역.',
     '8. question_jp — 대화를 이어가기 위한 추가 질문을 정확히 1개만. 학습자가 대답하기 쉬운 열린 질문으로.',
-    '9. question_romaji / question_ko — 8번에 대한 로마자 발음과 한국어 번역.',
+    '9. question_chunks / question_ko — 8번을 위 규칙대로 나눈 배열과 한국어 번역.',
     practiceBlock(),
     '',
     '태도: 격려하되 과장하지 말 것. 훈계조·장황한 설명 금지. 사용자가 한국어로 물으면 한국어로 답하되,',
@@ -251,6 +278,25 @@ function userNode(turn) {
   return row;
 }
 
+/**
+ * 일본어 문장을 후리가나 스타일로 렌더링한다 — 조각(chunk)마다 그 조각의 로마자를
+ * 바로 아래에 붙인다. chunks가 없거나 원문과 이어붙인 결과가 다르면(모델이 규칙을
+ * 어긴 경우) 안전하게 원문 전체 텍스트만 보여준다.
+ */
+function renderRuby(jpText, chunks) {
+  const valid = Array.isArray(chunks) && chunks.length > 0
+    && chunks.map((c) => c?.jp ?? '').join('') === jpText;
+
+  if (!valid) return esc(jpText);
+
+  return chunks.map((c) => {
+    const jp = esc(c.jp);
+    const rj = (c.romaji || '').trim();
+    if (!rj) return `<span class="ruby-plain">${jp}</span>`;
+    return `<span class="ruby-chunk"><span class="ruby-jp">${jp}</span><span class="ruby-romaji">${esc(rj)}</span></span>`;
+  }).join('');
+}
+
 function botNode(turn) {
   const d = turn.data;
   const row = document.createElement('div');
@@ -261,8 +307,7 @@ function botNode(turn) {
   if (d.correction_needed && (d.corrected_jp || d.feedback_ko)) {
     html += '<div class="correction">';
     html += '<div class="c-title">교정 및 피드백</div>';
-    if (d.corrected_jp) html += `<div class="c-fix">${esc(d.corrected_jp)}</div>`;
-    if (d.corrected_romaji) html += `<div class="c-romaji">${esc(d.corrected_romaji)}</div>`;
+    if (d.corrected_jp) html += `<div class="c-fix">${renderRuby(d.corrected_jp, d.corrected_chunks)}</div>`;
     if (d.feedback_ko) html += `<ul><li>${esc(d.feedback_ko)}</li></ul>`;
     html += '</div>';
   } else if (turn.hadUserInput) {
@@ -270,12 +315,10 @@ function botNode(turn) {
   }
 
   if (d.reply_jp) {
-    html += `<div class="jp">${esc(d.reply_jp)}</div>`;
-    if (d.reply_romaji) html += `<div class="romaji">${esc(d.reply_romaji)}</div>`;
+    html += `<div class="jp">${renderRuby(d.reply_jp, d.reply_chunks)}</div>`;
   }
   if (d.question_jp) {
-    html += `<div class="jp q-jp">${esc(d.question_jp)}</div>`;
-    if (d.question_romaji) html += `<div class="romaji">${esc(d.question_romaji)}</div>`;
+    html += `<div class="jp q-jp">${renderRuby(d.question_jp, d.question_chunks)}</div>`;
   }
 
   const ko = [d.reply_ko, d.question_ko].filter(Boolean).join(' ');
@@ -812,12 +855,21 @@ function greet() {
     kind: 'bot',
     hadUserInput: false,
     data: {
-      correction_needed: false, corrected_jp: '', corrected_romaji: '', feedback_ko: '',
+      correction_needed: false, corrected_jp: '', corrected_chunks: [], feedback_ko: '',
       reply_jp: 'こんにちは！日本語の会話練習を始めましょう。',
-      reply_romaji: 'Konnichiwa! Nihongo no kaiwa renshuu o hajimemashou.',
+      reply_chunks: [
+        { jp: 'こんにちは', romaji: 'konnichiwa' }, { jp: '！', romaji: '' },
+        { jp: '日本語', romaji: 'nihongo' }, { jp: 'の', romaji: 'no' },
+        { jp: '会話', romaji: 'kaiwa' }, { jp: '練習', romaji: 'renshuu' },
+        { jp: 'を', romaji: 'wo' }, { jp: '始めましょう', romaji: 'hajimemashou' }, { jp: '。', romaji: '' },
+      ],
       reply_ko: '안녕하세요! 일본어 회화 연습을 시작해 볼까요.',
       question_jp: '今日はどんな一日でしたか？',
-      question_romaji: 'Kyou wa donna ichinichi deshita ka?',
+      question_chunks: [
+        { jp: '今日', romaji: 'kyou' }, { jp: 'は', romaji: 'wa' },
+        { jp: 'どんな', romaji: 'donna' }, { jp: '一日', romaji: 'ichinichi' },
+        { jp: 'でした', romaji: 'deshita' }, { jp: 'か', romaji: 'ka' }, { jp: '？', romaji: '' },
+      ],
       question_ko: '오늘은 어떤 하루였나요?',
     },
   });
