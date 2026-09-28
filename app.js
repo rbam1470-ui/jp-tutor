@@ -967,6 +967,12 @@ function persistChat() {
     localStorage.setItem(LS.chat, JSON.stringify({
       history: state.history,
       turns: state.turns.filter((t) => t.kind !== 'notice'),
+      // 연습 모드 상태도 함께 저장한다 — 안 그러면 새로고침(모바일에서 탭이
+      // 백그라운드로 갔다가 재로딩되는 경우 등)될 때 연습 중이던 게 조용히
+      // 풀려서 '종료' 배너가 사라져버린다.
+      practiceMode: state.practiceMode,
+      practiceWords: state.practiceWords,
+      practiceStartTurn: state.practiceStartTurn,
     }));
   } catch (e) {
     console.warn('[jt] 대화 저장 실패 (용량 초과일 수 있습니다).', e);
@@ -987,6 +993,9 @@ function restore() {
     const c = JSON.parse(localStorage.getItem(LS.chat) || '{}');
     if (Array.isArray(c.history)) state.history = c.history;
     if (Array.isArray(c.turns)) state.turns = c.turns;
+    if (typeof c.practiceMode === 'boolean') state.practiceMode = c.practiceMode;
+    if (Array.isArray(c.practiceWords)) state.practiceWords = c.practiceWords;
+    if (typeof c.practiceStartTurn === 'number') state.practiceStartTurn = c.practiceStartTurn;
   } catch { /* 기본값 유지 */ }
 }
 
@@ -1247,6 +1256,9 @@ function endPractice() {
   state.practiceWords = [];
   state.practiceStartTurn = null;
   el.practiceBanner.hidden = true;
+  // 요약 카드가 안 붙는 경우(hadSession=false)엔 addTurn()이 안 불려서
+  // persistChat()도 자동으로 안 도니, 여기서 명시적으로 한 번 더 저장한다.
+  persistChat();
 }
 
 /* 퀴즈 */
@@ -1444,6 +1456,12 @@ async function main() {
   el.btnAutoTts.setAttribute('aria-pressed', String(state.autoTts));
   el.btnRomajiIme.setAttribute('aria-pressed', String(state.romajiIme));
   syncRomajiIme();
+
+  // 새로고침 전에 연습 모드였다면 배너/종료 버튼을 그대로 복원한다.
+  if (state.practiceMode && state.practiceWords.length) {
+    el.practiceBanner.hidden = false;
+    el.practiceBannerCount.textContent = state.practiceWords.length;
+  }
 
   if (!state.turns.length) greet();
   renderAll();
