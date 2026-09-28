@@ -304,8 +304,9 @@ body {
 }
 .ruby-ko {
   font-size: 0.56em;
-  font-weight: 600;
-  color: var(--accent);
+  font-weight: 700;
+  color: inherit;      /* var(--accent)는 사용자 말풍선(남색) 배경과 거의 같은 색이 되어 안 보였다 */
+  opacity: .8;
   line-height: 1.15;
   margin-top: 1px;
   white-space: nowrap;
