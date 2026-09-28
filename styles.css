@@ -351,17 +351,23 @@ body {
 .starters::-webkit-scrollbar { display: none; }
 .chip {
   flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  border-radius: 999px;
-  padding: 7px 14px;
-  font-size: 13px;
+  border-radius: 14px;
+  padding: 6px 13px;
   font-family: inherit;
   cursor: pointer;
   white-space: nowrap;
 }
-.chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip:hover { border-color: var(--accent); }
+.chip:hover .chip-jp { color: var(--accent); }
+.chip-jp { font-size: 13px; font-weight: 600; }
+.chip-romaji { font-size: 10.5px; font-style: italic; color: var(--text-dim); }
 
 /* ── 입력창 ─────────────────────────────── */
 
