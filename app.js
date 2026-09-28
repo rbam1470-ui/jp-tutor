@@ -240,7 +240,7 @@ async function loadApiKey() {
 const $ = (id) => document.getElementById(id);
 const el = {
   chat: $('chat'), input: $('input'), composer: $('composer'),
-  btnSend: $('btnSend'), btnMic: $('btnMic'), btnRomajiIme: $('btnRomajiIme'), status: $('statusLine'),
+  btnSend: $('btnSend'), btnMic: $('btnMic'), btnRomajiIme: $('btnRomajiIme'), btnKatakana: $('btnKatakana'), status: $('statusLine'),
   btnSettings: $('btnSettings'), btnReset: $('btnReset'), btnAutoTts: $('btnAutoTts'),
   backdrop: $('settingsBackdrop'), btnClose: $('btnCloseSettings'),
   apiKeyInput: $('apiKeyInput'), btnToggleKey: $('btnToggleKey'),
@@ -1051,6 +1051,32 @@ function syncRomajiIme() {
   if (state.romajiIme) wanakana.bind(el.input);
 }
 
+/**
+ * 외래어(가타카나) 입력용 — wanakana.bind()는 항상 히라가나로만 변환하므로,
+ * 선택한 부분(또는 선택이 없으면 커서 바로 앞의 "단어")을 가타카나로 바꿔주는
+ * 보조 버튼. 실제 일본어 IME의 F7 변환 키와 같은 역할.
+ */
+function convertToKatakana() {
+  if (typeof wanakana === 'undefined') return;
+  const value = el.input.value;
+  let start = el.input.selectionStart;
+  let end = el.input.selectionEnd;
+
+  if (start === end) {
+    let i = start;
+    while (i > 0 && !/[\s。、！？.,!?]/.test(value[i - 1])) i--;
+    start = i;
+  }
+  if (start === end) return;
+
+  const converted = wanakana.toKatakana(value.slice(start, end));
+  el.input.value = value.slice(0, start) + converted + value.slice(end);
+  const pos = start + converted.length;
+  el.input.focus();
+  el.input.setSelectionRange(pos, pos);
+  autoGrow();
+}
+
 const isTouch = window.matchMedia('(pointer: coarse)').matches;
 
 function setStatus(text) {
@@ -1322,6 +1348,8 @@ function bind() {
     syncRomajiIme();
     persistSettings();
   });
+
+  el.btnKatakana.addEventListener('click', convertToKatakana);
 
   el.btnSettings.addEventListener('click', openSettings);
   el.btnClose.addEventListener('click', closeSettings);
