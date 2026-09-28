@@ -172,6 +172,7 @@ const state = {
   level: 'intermediate',
   rate: 0.95,
   autoTts: true,
+  romajiIme: true,  // 로마자 입력 시 히라가나로 실시간 자동 변환 (wanakana) — 일본어 타자를 못 치는 사용자를 위함
   history: [],   // Anthropic messages 배열 [{role, content}]
   turns: [],     // 화면 렌더용 [{kind, ...}]
   busy: false,
@@ -239,7 +240,7 @@ async function loadApiKey() {
 const $ = (id) => document.getElementById(id);
 const el = {
   chat: $('chat'), input: $('input'), composer: $('composer'),
-  btnSend: $('btnSend'), btnMic: $('btnMic'), status: $('statusLine'),
+  btnSend: $('btnSend'), btnMic: $('btnMic'), btnRomajiIme: $('btnRomajiIme'), status: $('statusLine'),
   btnSettings: $('btnSettings'), btnReset: $('btnReset'), btnAutoTts: $('btnAutoTts'),
   backdrop: $('settingsBackdrop'), btnClose: $('btnCloseSettings'),
   apiKeyInput: $('apiKeyInput'), btnToggleKey: $('btnToggleKey'),
@@ -956,6 +957,7 @@ async function saveSettings() {
 function persistSettings() {
   localStorage.setItem(LS.settings, JSON.stringify({
     model: state.model, level: state.level, rate: state.rate, autoTts: state.autoTts,
+    romajiIme: state.romajiIme,
   }));
   if (typeof scheduleSyncPush === 'function') scheduleSyncPush();
 }
@@ -978,6 +980,7 @@ function restore() {
     if (LEVELS[s.level]) state.level = s.level;
     if (s.rate) state.rate = s.rate;
     if (typeof s.autoTts === 'boolean') state.autoTts = s.autoTts;
+    if (typeof s.romajiIme === 'boolean') state.romajiIme = s.romajiIme;
   } catch { /* 기본값 유지 */ }
 
   try {
@@ -1034,6 +1037,17 @@ function greet() {
 function autoGrow() {
   el.input.style.height = 'auto';
   el.input.style.height = Math.min(el.input.scrollHeight, 140) + 'px';
+}
+
+/**
+ * 일본어 IME가 없어 히라가나를 직접 칠 수 없는 사용자를 위해, 로마자로 치면
+ * 실시간으로 히라가나로 자동 변환해 주는 wanakana 바인딩을 켜고 끈다.
+ * (한국어로 질문을 입력하는 경우도 있으므로 기본은 켜져 있되 언제든 끌 수 있게 둔다.)
+ */
+function syncRomajiIme() {
+  if (typeof wanakana === 'undefined') return;
+  wanakana.unbind(el.input);
+  if (state.romajiIme) wanakana.bind(el.input);
 }
 
 const isTouch = window.matchMedia('(pointer: coarse)').matches;
@@ -1301,6 +1315,13 @@ function bind() {
 
   el.btnMic.addEventListener('click', () => (state.recording ? stopRecording() : startRecording()));
 
+  el.btnRomajiIme.addEventListener('click', () => {
+    state.romajiIme = !state.romajiIme;
+    el.btnRomajiIme.setAttribute('aria-pressed', String(state.romajiIme));
+    syncRomajiIme();
+    persistSettings();
+  });
+
   el.btnSettings.addEventListener('click', openSettings);
   el.btnClose.addEventListener('click', closeSettings);
   el.btnSave.addEventListener('click', saveSettings);
@@ -1380,6 +1401,8 @@ async function main() {
   state.apiKey = await loadApiKey();
 
   el.btnAutoTts.setAttribute('aria-pressed', String(state.autoTts));
+  el.btnRomajiIme.setAttribute('aria-pressed', String(state.romajiIme));
+  syncRomajiIme();
 
   if (!state.turns.length) greet();
   renderAll();
