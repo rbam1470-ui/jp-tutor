@@ -1046,7 +1046,8 @@ function autoGrow() {
  */
 function syncRomajiIme() {
   if (typeof wanakana === 'undefined') return;
-  wanakana.unbind(el.input);
+  // unbind()는 아직 바인딩된 적 없는 요소에 호출하면 예외를 던지므로 감싸준다.
+  try { wanakana.unbind(el.input); } catch { /* 바인딩된 적 없음 — 무시 */ }
   if (state.romajiIme) wanakana.bind(el.input);
 }
 
