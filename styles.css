@@ -405,6 +405,63 @@ body {
 .chip-jp { font-size: 13px; font-weight: 600; }
 .chip-romaji { font-size: 10.5px; font-style: italic; color: var(--text-dim); }
 
+/* ── 단어 타일 조립 모드 (듀오링고식) ──────── */
+
+.tile-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 0;
+}
+.tile-assembly {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  min-height: 46px;
+  padding: 8px;
+  border: 1.5px dashed var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.tile-assembly-hint {
+  align-self: center;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+.tile-bank {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 40px;
+}
+.word-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: transform .1s, border-color .15s;
+}
+.word-tile:active { transform: scale(.94); }
+.tile-bank .word-tile:hover { border-color: var(--accent); }
+.tile-assembly .word-tile { background: var(--accent-soft); border-color: var(--accent); }
+.wt-jp { font-size: 15px; font-weight: 600; }
+.wt-romaji { font-size: 10px; font-style: italic; color: var(--text-dim); }
+.tile-assembly .wt-romaji { color: var(--accent); }
+.tile-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
 /* ── 입력창 ─────────────────────────────── */
 
 .composer {

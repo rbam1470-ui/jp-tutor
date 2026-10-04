@@ -85,11 +85,15 @@ const SCHEMA = {
     question_jp:       { type: 'string',  description: '대화를 이어가기 위한 추가 질문 1개 (일본어)' },
     question_chunks:   chunksSchema('question_jp를 단어/구 단위로 나눈 배열. 비우지 말 것'),
     question_ko:       { type: 'string',  description: 'question_jp 의 한국어 번역' },
+    reply_hint_jp:      { type: 'string',  description: 'question_jp에 대한 답으로 학습자가 말해볼 수 있는 자연스러운 예시 문장 1개 (학습자 수준에 맞춘 짧은 문장)' },
+    reply_hint_chunks:  chunksSchema('reply_hint_jp를 단어/구 단위로 나눈 배열. 비우지 말 것 — 단어 타일 조립 연습에 쓰인다'),
+    reply_hint_ko:      { type: 'string',  description: 'reply_hint_jp 의 한국어 번역' },
   },
   required: [
     'correction_needed', 'user_input_chunks', 'corrected_jp', 'corrected_chunks', 'feedback_ko',
     'reply_jp', 'reply_chunks', 'reply_ko',
     'question_jp', 'question_chunks', 'question_ko',
+    'reply_hint_jp', 'reply_hint_chunks', 'reply_hint_ko',
   ],
   additionalProperties: false,
 };
@@ -154,6 +158,10 @@ function systemPrompt() {
     '8. reply_ko — reply_jp의 한국어 번역.',
     '9. question_jp — 대화를 이어가기 위한 추가 질문을 정확히 1개만. 학습자가 대답하기 쉬운 열린 질문으로.',
     '10. question_chunks / question_ko — 9번을 위 규칙대로 나눈 배열과 한국어 번역.',
+    '11. reply_hint_jp — question_jp에 학습자가 대답할 때 쓸 수 있는 자연스러운 예시 문장 1개',
+    '    (학습자 수준에 맞는 짧고 쉬운 문장, 2~5단어/구 정도). 학습자가 이 단어들을 화면에서',
+    '    순서대로 눌러 조립해서 보내는 용도이므로, 너무 길거나 복잡한 문장은 피할 것.',
+    '12. reply_hint_chunks / reply_hint_ko — 11번을 위 규칙대로 나눈 배열과 한국어 번역. 비우지 말 것.',
     practiceBlock(),
     '',
     '태도: 격려하되 과장하지 말 것. 훈계조·장황한 설명 금지. 사용자가 한국어로 물으면 한국어로 답하되,',
@@ -173,6 +181,10 @@ const state = {
   rate: 0.95,
   autoTts: true,
   romajiIme: true,  // 로마자 입력 시 히라가나로 실시간 자동 변환 (wanakana) — 일본어 타자를 못 치는 사용자를 위함
+  tileMode: true,       // 듀오링고식 단어 타일 조립 입력 모드 (꺼지면 자유 타이핑)
+  tileBank: [],         // 아직 안 쌓은 단어 타일 목록 ({jp, romaji, ko}) — 봇 턴마다 새로 채워짐
+  tileAssembled: [],    // 사용자가 순서대로 쌓은 타일 목록
+  tileTrailingPunct: '', // 전송할 때 조립한 문장 끝에 자동으로 붙일 구두점(。등)
   history: [],   // Anthropic messages 배열 [{role, content}]
   turns: [],     // 화면 렌더용 [{kind, ...}]
   busy: false,
@@ -241,6 +253,8 @@ const $ = (id) => document.getElementById(id);
 const el = {
   chat: $('chat'), input: $('input'), composer: $('composer'),
   btnSend: $('btnSend'), btnMic: $('btnMic'), btnRomajiIme: $('btnRomajiIme'), btnKatakana: $('btnKatakana'), status: $('statusLine'),
+  btnTileMode: $('btnTileMode'), tileComposer: $('tileComposer'), tileAssembly: $('tileAssembly'), tileBank: $('tileBank'),
+  btnTileFreeType: $('btnTileFreeType'), btnTileSend: $('btnTileSend'),
   btnSettings: $('btnSettings'), btnReset: $('btnReset'), btnAutoTts: $('btnAutoTts'),
   backdrop: $('settingsBackdrop'), btnClose: $('btnCloseSettings'),
   apiKeyInput: $('apiKeyInput'), btnToggleKey: $('btnToggleKey'),
@@ -359,28 +373,54 @@ function renderMora(m) {
  * 부담이 없다. chunks가 없거나 원문과 이어붙인 결과가 다르면(모델이 규칙을 어긴 경우)
  * 안전하게 원문 전체 텍스트만 보여준다.
  */
-function renderRuby(jpText, chunks) {
+/**
+ * 평평한 글자(mora) 조각 배열이 유효한지(원문과 정확히 이어붙여지는지) 확인하고,
+ * 단어 단위로 그룹핑한다 — 구두점은 항상 단독 묶음, ko가 채워진 조각은 새 묶음 시작.
+ * renderRuby(후리가나 표시)와 buildWordTiles(단어 타일 조립)가 공통으로 쓴다.
+ */
+function groupChunksIntoWords(jpText, chunks) {
   const valid = Array.isArray(chunks) && chunks.length > 0
     && chunks.map((c) => c?.jp ?? '').join('') === jpText;
+  if (!valid) return null;
 
-  if (!valid) return esc(jpText);
-
-  // 1) 단어 묶음으로 그룹핑: 구두점은 항상 단독 묶음, ko가 채워진 조각은 새 묶음 시작.
   const groups = [];
   for (const c of chunks) {
     const isPunct = RUBY_PUNCT_RE.test(c.jp);
     const ko = isPunct ? '' : (c.ko || '').trim();
     const startsNewGroup = isPunct || ko || groups.length === 0;
-    if (startsNewGroup) groups.push({ ko, mora: [c] });
+    if (startsNewGroup) groups.push({ ko, isPunct, mora: [c] });
     else groups[groups.length - 1].mora.push(c);
   }
+  return groups;
+}
 
-  // 2) 각 묶음을 렌더링: 글자별 발음 행 + (있으면) 묶음 전체의 뜻 한 줄.
+function renderRuby(jpText, chunks) {
+  const groups = groupChunksIntoWords(jpText, chunks);
+  if (!groups) return esc(jpText);
+
   return groups.map((g) => {
     const moraHtml = g.mora.map(renderMora).join('');
     const koHtml = g.ko ? `<span class="ruby-ko">${esc(g.ko)}</span>` : '';
     return `<span class="ruby-word"><span class="ruby-mora-row">${moraHtml}</span>${koHtml}</span>`;
   }).join('');
+}
+
+/**
+ * 듀오링고식 "단어 타일" 조립용 — 구두점을 뺀 단어 묶음만 타일로 돌려주고, 문장 끝
+ * 구두점(있다면)은 따로 분리해서 돌려준다(전송할 때 자동으로 붙여줌). 조각이 유효하지
+ * 않거나(원문과 안 맞음) 타일이 2개 미만이면 null(타일 모드 포기 — 자유 입력으로 대체).
+ */
+function buildWordTiles(jpText, chunks) {
+  const groups = groupChunksIntoWords(jpText, chunks);
+  if (!groups) return null;
+  const last = groups[groups.length - 1];
+  const trailingPunct = last?.isPunct ? last.mora.map((m) => m.jp).join('') : '';
+  const words = groups.filter((g) => !g.isPunct).map((g) => ({
+    jp: g.mora.map((m) => m.jp).join(''),
+    romaji: g.mora.map((m) => (m.romaji || '').trim()).filter(Boolean).join(' '),
+    ko: g.ko,
+  }));
+  return words.length >= 2 ? { words, trailingPunct } : null;
 }
 
 function botNode(turn) {
@@ -670,6 +710,7 @@ async function runTurn(userTurn, userRow) {
     }
 
     addTurn({ kind: 'bot', data, hadUserInput: true });
+    refillTiles();
 
     if (state.autoTts) speak(speakText(data));
   } catch (err) {
@@ -957,7 +998,7 @@ async function saveSettings() {
 function persistSettings() {
   localStorage.setItem(LS.settings, JSON.stringify({
     model: state.model, level: state.level, rate: state.rate, autoTts: state.autoTts,
-    romajiIme: state.romajiIme,
+    romajiIme: state.romajiIme, tileMode: state.tileMode,
   }));
   if (typeof scheduleSyncPush === 'function') scheduleSyncPush();
 }
@@ -987,6 +1028,7 @@ function restore() {
     if (s.rate) state.rate = s.rate;
     if (typeof s.autoTts === 'boolean') state.autoTts = s.autoTts;
     if (typeof s.romajiIme === 'boolean') state.romajiIme = s.romajiIme;
+    if (typeof s.tileMode === 'boolean') state.tileMode = s.tileMode;
   } catch { /* 기본값 유지 */ }
 
   try {
@@ -1008,6 +1050,7 @@ function resetChat() {
   localStorage.removeItem(LS.chat);
   greet();
   renderAll();
+  refillTiles();
 }
 
 function greet() {
@@ -1037,6 +1080,14 @@ function greet() {
         { jp: 'か', romaji: 'ka', ko: '~까?' }, { jp: '？', romaji: '', ko: '' },
       ],
       question_ko: '오늘은 어떤 하루였나요?',
+      reply_hint_jp: '今日は楽しかったです。',
+      reply_hint_chunks: [
+        { jp: '今日', romaji: 'kyou', ko: '오늘' }, { jp: 'は', romaji: 'wa', ko: '~은/는' },
+        { jp: '楽', romaji: 'tano', ko: '즐거웠다' }, { jp: 'し', romaji: 'shi', ko: '' },
+        { jp: 'かった', romaji: 'katta', ko: '' }, { jp: 'です', romaji: 'desu', ko: '' },
+        { jp: '。', romaji: '', ko: '' },
+      ],
+      reply_hint_ko: '오늘은 즐거웠어요.',
     },
   });
 }
@@ -1084,6 +1135,74 @@ function convertToKatakana() {
   el.input.focus();
   el.input.setSelectionRange(pos, pos);
   autoGrow();
+}
+
+/* ── 12-1. 단어 타일 조립 모드 (듀오링고식) ──────────────────── */
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/** 가장 최근 봇 턴의 reply_hint로 타일을 새로 채운다. 쓸 만한 힌트가 없으면 타일을 비워 자유 입력으로 자연스럽게 대체된다. */
+function refillTiles() {
+  state.tileAssembled = [];
+  state.tileBank = [];
+  state.tileTrailingPunct = '';
+
+  const lastBot = [...state.turns].reverse().find((t) => t.kind === 'bot');
+  const built = lastBot?.data ? buildWordTiles(lastBot.data.reply_hint_jp, lastBot.data.reply_hint_chunks) : null;
+  if (built) {
+    state.tileBank = shuffle(built.words);
+    state.tileTrailingPunct = built.trailingPunct;
+  }
+  renderTileUI();
+}
+
+function tileChipHtml(w, idx) {
+  return `<button type="button" class="word-tile" data-idx="${idx}">
+    <span class="wt-jp">${esc(w.jp)}</span>
+    ${w.romaji ? `<span class="wt-romaji">${esc(w.romaji)}</span>` : ''}
+  </button>`;
+}
+
+function renderTileUI() {
+  const hasTiles = state.tileMode && (state.tileBank.length > 0 || state.tileAssembled.length > 0);
+  el.tileComposer.hidden = !hasTiles;
+  el.composer.hidden = hasTiles;
+  if (hasTiles) el.starters.hidden = true; // 타일이 있으면 시작 문구 칩과 중복되니 숨긴다
+  if (!hasTiles) return;
+
+  el.tileAssembly.innerHTML = state.tileAssembled.length
+    ? state.tileAssembled.map(tileChipHtml).join('')
+    : '<span class="tile-assembly-hint">아래 단어를 눌러서 순서대로 쌓아 문장을 만들어 보세요</span>';
+  el.tileBank.innerHTML = state.tileBank.map(tileChipHtml).join('');
+  el.btnTileSend.disabled = state.tileAssembled.length === 0;
+}
+
+function pickFromBank(idx) {
+  const [w] = state.tileBank.splice(idx, 1);
+  if (w) state.tileAssembled.push(w);
+  renderTileUI();
+}
+
+function returnToBank(idx) {
+  const [w] = state.tileAssembled.splice(idx, 1);
+  if (w) state.tileBank.push(w);
+  renderTileUI();
+}
+
+function sendAssembledTiles() {
+  if (!state.tileAssembled.length) return;
+  const text = state.tileAssembled.map((w) => w.jp).join('') + state.tileTrailingPunct;
+  state.tileAssembled = [];
+  state.tileBank = [];
+  state.tileTrailingPunct = '';
+  send(text);
 }
 
 const isTouch = window.matchMedia('(pointer: coarse)').matches;
@@ -1375,6 +1494,30 @@ function bind() {
 
   el.btnKatakana.addEventListener('click', convertToKatakana);
 
+  el.btnTileMode.addEventListener('click', () => {
+    state.tileMode = !state.tileMode;
+    el.btnTileMode.setAttribute('aria-pressed', String(state.tileMode));
+    persistSettings();
+    renderTileUI();
+    if (!state.tileMode) el.input.focus({ preventScroll: true });
+  });
+  el.btnTileFreeType.addEventListener('click', () => {
+    state.tileMode = false;
+    el.btnTileMode.setAttribute('aria-pressed', 'false');
+    persistSettings();
+    renderTileUI();
+    el.input.focus({ preventScroll: true });
+  });
+  el.btnTileSend.addEventListener('click', sendAssembledTiles);
+  el.tileBank.addEventListener('click', (e) => {
+    const btn = e.target.closest('.word-tile');
+    if (btn) pickFromBank(Number(btn.dataset.idx));
+  });
+  el.tileAssembly.addEventListener('click', (e) => {
+    const btn = e.target.closest('.word-tile');
+    if (btn) returnToBank(Number(btn.dataset.idx));
+  });
+
   el.btnSettings.addEventListener('click', openSettings);
   el.btnClose.addEventListener('click', closeSettings);
   el.btnSave.addEventListener('click', saveSettings);
@@ -1455,6 +1598,7 @@ async function main() {
 
   el.btnAutoTts.setAttribute('aria-pressed', String(state.autoTts));
   el.btnRomajiIme.setAttribute('aria-pressed', String(state.romajiIme));
+  el.btnTileMode.setAttribute('aria-pressed', String(state.tileMode));
   syncRomajiIme();
 
   // 새로고침 전에 연습 모드였다면 배너/종료 버튼을 그대로 복원한다.
@@ -1466,6 +1610,7 @@ async function main() {
   if (!state.turns.length) greet();
   renderAll();
   updateStudyBadge();
+  refillTiles();
 
   // 단어 은행이 바닥났으면 백그라운드에서 자동으로 새 단어를 생성한다.
   // await하지 않음 — 초기 화면 표시를 API 호출로 지연시키지 않기 위함.

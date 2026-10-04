@@ -10,7 +10,7 @@
 <title>일본어 회화 튜터</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗾</text></svg>">
 <!-- 배포할 때마다 ?v= 뒤 숫자를 올려서 브라우저 캐시 문제로 옛날 코드가 계속 쓰이는 걸 방지한다. -->
-<link rel="stylesheet" href="styles.css?v=13">
+<link rel="stylesheet" href="styles.css?v=14">
 </head>
 <body>
 
@@ -70,7 +70,19 @@
       <button id="btnEndPractice" type="button">종료</button>
     </div>
 
+    <!-- 듀오링고식 단어 타일 조립 입력 — 봇의 reply_hint_chunks로 타일을 만들어 탭으로 문장을 조립한다. -->
+    <div id="tileComposer" class="tile-composer" hidden>
+      <div id="tileAssembly" class="tile-assembly"></div>
+      <div id="tileBank" class="tile-bank"></div>
+      <div class="tile-actions">
+        <button id="btnTileFreeType" type="button" class="action-btn secondary">⌨️ 직접 입력</button>
+        <button id="btnTileSend" type="button" class="action-btn primary" disabled>전송</button>
+      </div>
+    </div>
+
     <form id="composer" class="composer">
+      <button id="btnTileMode" class="ime-btn" type="button" aria-pressed="true"
+              title="단어 타일 조립 모드 켜기/끄기 — 켜면 타이핑 대신 단어 타일을 눌러서 문장을 만듭니다">🧩</button>
       <button id="btnMic" class="mic-btn" type="button" title="음성 입력 (일본어)">
         <span class="mic-pulse" aria-hidden="true"></span>
         <span class="ico" aria-hidden="true">🎙️</span>
@@ -182,9 +194,9 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 <!-- 일본어 타자를 칠 수 없는 사용자를 위한 로마자→히라가나 실시간 변환 (예: konnichiwa → こんにちは) -->
 <script src="https://cdn.jsdelivr.net/npm/wanakana@5.3.1/wanakana.min.js"></script>
-<script src="vocab.js?v=13"></script>
-<script src="srs.js?v=13"></script>
-<script src="sync.js?v=13"></script>
-<script src="app.js?v=13"></script>
+<script src="vocab.js?v=14"></script>
+<script src="srs.js?v=14"></script>
+<script src="sync.js?v=14"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>
