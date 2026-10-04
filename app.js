@@ -88,12 +88,25 @@ const SCHEMA = {
     reply_hint_jp:      { type: 'string',  description: 'question_jp에 대한 답으로 학습자가 말해볼 수 있는 자연스러운 예시 문장 1개 (학습자 수준에 맞춘 짧은 문장)' },
     reply_hint_chunks:  chunksSchema('reply_hint_jp를 단어/구 단위로 나눈 배열. 비우지 말 것 — 단어 타일 조립 연습에 쓰인다'),
     reply_hint_ko:      { type: 'string',  description: 'reply_hint_jp 의 한국어 번역' },
+    decoy_words: {
+      type: 'array',
+      description: '단어 타일 조립 연습에 함정으로 섞을 "틀린 단어/활용형" 1~2개. reply_hint_jp에는 쓰이지 않지만 맥락상 헷갈릴 만한 것(비슷한 단어의 잘못된 활용형, 안 맞는 조사 등). 적절한 게 없으면 빈 배열.',
+      items: {
+        type: 'object',
+        properties: {
+          jp:     { type: 'string', description: '함정 단어/활용형의 일본어' },
+          romaji: { type: 'string', description: '그 단어의 로마자 발음' },
+        },
+        required: ['jp', 'romaji'],
+        additionalProperties: false,
+      },
+    },
   },
   required: [
     'correction_needed', 'user_input_chunks', 'corrected_jp', 'corrected_chunks', 'feedback_ko',
     'reply_jp', 'reply_chunks', 'reply_ko',
     'question_jp', 'question_chunks', 'question_ko',
-    'reply_hint_jp', 'reply_hint_chunks', 'reply_hint_ko',
+    'reply_hint_jp', 'reply_hint_chunks', 'reply_hint_ko', 'decoy_words',
   ],
   additionalProperties: false,
 };
@@ -162,6 +175,11 @@ function systemPrompt() {
     '    (학습자 수준에 맞는 짧고 쉬운 문장, 2~5단어/구 정도). 학습자가 이 단어들을 화면에서',
     '    순서대로 눌러 조립해서 보내는 용도이므로, 너무 길거나 복잡한 문장은 피할 것.',
     '12. reply_hint_chunks / reply_hint_ko — 11번을 위 규칙대로 나눈 배열과 한국어 번역. 비우지 말 것.',
+    '13. decoy_words — 단어 타일 조립 연습을 더 어렵게 만들 "함정" 단어/활용형 1~2개.',
+    '    reply_hint_jp에는 등장하지 않지만, 비슷한 뜻의 다른 단어나 그 단어의 잘못된 활용형처럼',
+    '    맥락상 그럴듯해서 학습자가 실수로 고를 법한 것으로 고를 것 (예: 行く의 올바른 활용이',
+    '    아닌 다른 활용형, 비슷한 의미의 다른 동사, 안 맞는 조사 등). 적절한 게 떠오르지 않으면',
+    '    빈 배열로 둘 것 — 억지로 만들지 말 것.',
     practiceBlock(),
     '',
     '태도: 격려하되 과장하지 말 것. 훈계조·장황한 설명 금지. 사용자가 한국어로 물으면 한국어로 답하되,',
@@ -1088,6 +1106,7 @@ function greet() {
         { jp: '。', romaji: '', ko: '' },
       ],
       reply_hint_ko: '오늘은 즐거웠어요.',
+      decoy_words: [{ jp: '忙しかったです', romaji: 'isogashikatta desu' }],
     },
   });
 }
@@ -1157,7 +1176,15 @@ function refillTiles() {
   const lastBot = [...state.turns].reverse().find((t) => t.kind === 'bot');
   const built = lastBot?.data ? buildWordTiles(lastBot.data.reply_hint_jp, lastBot.data.reply_hint_chunks) : null;
   if (built) {
-    state.tileBank = shuffle(built.words);
+    // 함정 타일(decoy_words) — 정답 문장엔 안 쓰이지만 헷갈릴 만한 단어를 섞어서 난이도를 올린다.
+    // 모양이 다른 타일과 똑같아서(스타일로 구분 안 됨) 어느 게 함정인지 겉으로는 알 수 없다.
+    // 잘못 골라 전송해도 새 검증 로직 없이 기존 AI 교정이 그대로 걸러준다.
+    const decoys = Array.isArray(lastBot.data.decoy_words)
+      ? lastBot.data.decoy_words
+          .filter((d) => d?.jp)
+          .map((d) => ({ jp: d.jp, romaji: (d.romaji || '').trim(), ko: '', decoy: true }))
+      : [];
+    state.tileBank = shuffle([...built.words, ...decoys]);
     state.tileTrailingPunct = built.trailingPunct;
   }
   renderTileUI();
